@@ -81,4 +81,16 @@ class ExcelReaderTest {
             assertTrue(e.message!!.contains("ברקוד"))
         }
     }
+
+    @Test
+    fun `combines numbered location columns regardless of their physical order in the file`() {
+        // Fixture headers are: מקט, מיקום 3, תאור, ברקוד, מיקום, מיקום 2 — the
+        // numbered columns are scattered and out of numeric order on purpose.
+        val result = fixture("sample_multi_location.xlsx").use { ExcelReader.readProductsFromStream(it) }
+        val bySku = result.products.associateBy { it.sku }
+
+        assertEquals("A-01-05, B-02-01, C-03-01", bySku.getValue("MULTI-1").location)
+        assertEquals("A-01-06", bySku.getValue("SINGLE-1").location)
+        assertEquals("", bySku.getValue("NONE-1").location)
+    }
 }
