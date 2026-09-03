@@ -9,6 +9,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.warehouse.stockscanner.data.ProductRepository
+import com.warehouse.stockscanner.util.LocationUtils
 import kotlinx.coroutines.launch
 
 /**
@@ -49,12 +50,19 @@ class ProductConfirmActivity : AppCompatActivity() {
         val btnConfirm = findViewById<Button>(R.id.btnConfirm)
         val btnCancel = findViewById<Button>(R.id.btnCancel)
 
+        // A product can sit in more than one location at once — a confirmed
+        // scan always ADDS the current location, it never replaces the
+        // product's existing ones.
+        val existingLocationsList = LocationUtils.parse(existingLocation)
+        val alreadyAtThisLocation = LocationUtils.contains(existingLocation, currentLocation)
+        val finalLocation = LocationUtils.add(existingLocation, currentLocation)
+
         tvSku.text = sku
         etDescription.setText(description)
         tvBarcode.text = scannedBarcode
         tvBarcodeLabel.text =
             if (existingBarcode.isNotBlank() && existingBarcode != scannedBarcode) "ברקוד שנסרק:" else "ברקוד:"
-        tvLocation.text = currentLocation
+        tvLocation.text = finalLocation
 
         btnCancel.setOnClickListener {
             setResult(RESULT_CANCELED)
@@ -66,16 +74,20 @@ class ProductConfirmActivity : AppCompatActivity() {
             when {
                 sku.isBlank() -> Toast.makeText(this, "שגיאה: מקט חסר", Toast.LENGTH_SHORT).show()
                 newDescription.isBlank() -> Toast.makeText(this, "יש להזין תיאור", Toast.LENGTH_SHORT).show()
-                else -> saveAndFinish(sku, newDescription, scannedBarcode, currentLocation)
+                else -> saveAndFinish(sku, newDescription, scannedBarcode, finalLocation)
             }
         }
 
-        if (existingLocation.isNotBlank() && existingLocation != currentLocation) {
+        if (existingLocationsList.isNotEmpty() && !alreadyAtThisLocation) {
             AlertDialog.Builder(this)
-                .setTitle("⚠️ למוצר כבר קיים מיקום")
-                .setMessage("מיקום קיים: $existingLocation\nמיקום חדש: $currentLocation\n\nהאם להעביר את המוצר?")
+                .setTitle("⚠️ למוצר כבר יש מיקום קיים")
+                .setMessage(
+                    "מיקומים קיימים: ${LocationUtils.format(existingLocationsList)}\n" +
+                        "מיקום נוסף: $currentLocation\n\n" +
+                        "האם להוסיף את המיקום החדש למוצר?"
+                )
                 .setCancelable(false)
-                .setPositiveButton("כן, העבר") { dialog, _ -> dialog.dismiss() }
+                .setPositiveButton("כן, הוסף") { dialog, _ -> dialog.dismiss() }
                 .setNegativeButton("ביטול") { _, _ ->
                     setResult(RESULT_CANCELED)
                     finish()

@@ -30,9 +30,6 @@ interface ProductDao {
     @Query("SELECT COUNT(*) FROM products")
     suspend fun count(): Int
 
-    @Query("SELECT * FROM products WHERE location = :location ORDER BY rowOrder ASC")
-    suspend fun findByLocation(location: String): List<ProductEntity>
-
     @Update
     suspend fun update(product: ProductEntity)
 }

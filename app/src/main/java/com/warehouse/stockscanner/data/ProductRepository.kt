@@ -5,6 +5,7 @@ import android.net.Uri
 import com.warehouse.stockscanner.excel.ExcelLoadResult
 import com.warehouse.stockscanner.excel.ExcelReader
 import com.warehouse.stockscanner.excel.ExcelWriter
+import com.warehouse.stockscanner.util.LocationUtils
 import com.warehouse.stockscanner.util.SearchUtils
 
 class ProductRepository(private val context: Context, private val dao: ProductDao) {
@@ -46,11 +47,18 @@ class ProductRepository(private val context: Context, private val dao: ProductDa
 
     suspend fun count(): Int = dao.count()
 
-    /** Every product currently assigned to [location] — what's on that shelf right now. */
+    /**
+     * Every product currently assigned to [location] — what's on that shelf
+     * right now. A product's מיקום cell can list several locations (see
+     * LocationUtils), so this checks membership rather than exact equality —
+     * a plain SQL "=" or "LIKE" would either miss multi-location rows or
+     * false-match a location that's merely a substring of another (e.g.
+     * "A-01-1" inside "A-01-10").
+     */
     suspend fun findByLocation(location: String): List<ProductEntity> {
         val trimmed = location.trim()
         if (trimmed.isEmpty()) return emptyList()
-        return dao.findByLocation(trimmed)
+        return dao.getAllForSearch().filter { LocationUtils.contains(it.location, trimmed) }
     }
 
     suspend fun exportToExcel(uri: Uri) {
