@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/scanner_overlay_background"
+            android:textColor="@color/scanner_overlay_text"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:padding="20dp"
+            android:text="" />
+
+        <TextView
+            android:id="@+id/tvLocationBadge"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/scanner_badge_background"
+            android:textColor="@color/scanner_overlay_text"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:padding="14dp"
+            android:visibility="gone"
+            android:text="" />
+
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btnCancelScan"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_margin="24dp"
+        android:text="ביטול" />
+
+</FrameLayout>

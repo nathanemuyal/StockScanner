@@ -1,0 +1,26 @@
+<resources>
+    <!-- Dark palette. Same names as values/colors.xml — Android picks this
+         file automatically when the system is in dark mode. -->
+
+    <color name="color_primary">#5C9CE6</color>
+    <color name="color_primary_dark">#0D47A1</color>
+    <color name="color_on_primary">#00203A</color>
+
+    <color name="color_background">#121417</color>
+    <color name="color_surface">#1E2126</color>
+    <color name="color_card_background">#23262C</color>
+
+    <color name="color_text_primary">#ECEEF0</color>
+    <color name="color_text_secondary">#A9B0B8</color>
+
+    <color name="color_divider">#33383E</color>
+
+    <color name="color_warning">#FF6E6E</color>
+
+    <color name="scanner_overlay_background">#AA000000</color>
+    <color name="scanner_overlay_text">#FFFFFF</color>
+    <color name="scanner_badge_background">#CC5C9CE6</color>
+
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

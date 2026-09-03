@@ -1,0 +1,29 @@
+<resources>
+    <!-- Light palette (default). Dark overrides live in values-night/colors.xml
+         with the same names — never hardcode a hex color directly in a layout,
+         always reference these so day/night switches automatically. -->
+
+    <color name="color_primary">#1565C0</color>
+    <color name="color_primary_dark">#0D47A1</color>
+    <color name="color_on_primary">#FFFFFF</color>
+
+    <color name="color_background">#F5F7FA</color>
+    <color name="color_surface">#FFFFFF</color>
+    <color name="color_card_background">#EEF1F5</color>
+
+    <color name="color_text_primary">#1B1C1E</color>
+    <color name="color_text_secondary">#5B6470</color>
+
+    <color name="color_divider">#DDE2E7</color>
+
+    <color name="color_warning">#B00020</color>
+
+    <!-- Fixed colors: intentionally the same in both themes (overlay bars on
+         top of the camera preview, not affected by day/night). -->
+    <color name="scanner_overlay_background">#AA000000</color>
+    <color name="scanner_overlay_text">#FFFFFF</color>
+    <color name="scanner_badge_background">#CC1565C0</color>
+
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
