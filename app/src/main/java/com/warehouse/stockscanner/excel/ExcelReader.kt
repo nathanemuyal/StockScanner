@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Xml
 import com.warehouse.stockscanner.data.ProductEntity
+import com.warehouse.stockscanner.util.LocationUtils
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
@@ -35,6 +36,11 @@ object ExcelReader {
     private const val COL_DESCRIPTION = "תאור"
     private const val COL_BARCODE = "ברקוד"
     private const val COL_LOCATION = "מיקום"
+
+    // A product with more than one location gets extra columns "מיקום 2",
+    // "מיקום 3", ... rather than a single delimited cell — this matches the
+    // column-per-location layout the file is expected to use.
+    private val LOCATION_HEADER_REGEX = Regex("^${Regex.escape(COL_LOCATION)}(?:\\s+(\\d+))?$")
 
     fun readProducts(context: Context, uri: Uri): ExcelLoadResult {
         val opened = context.contentResolver.openInputStream(uri)
@@ -198,13 +204,23 @@ object ExcelReader {
         val skuCol = headers[COL_SKU]
         val descCol = headers[COL_DESCRIPTION]
         val barcodeCol = headers[COL_BARCODE]
-        val locationCol = headers[COL_LOCATION]
+
+        // Every header matching "מיקום" or "מיקום <n>", in ascending order of
+        // n (the bare "מיקום" counts as 1), combined into one internal value.
+        val locationCols = headers.entries
+            .mapNotNull { (header, colIndex) ->
+                val match = LOCATION_HEADER_REGEX.find(header) ?: return@mapNotNull null
+                val number = match.groupValues[1].toIntOrNull() ?: 1
+                number to colIndex
+            }
+            .sortedBy { it.first }
+            .map { it.second }
 
         val missing = ArrayList<String>()
         if (skuCol == null) missing.add(COL_SKU)
         if (descCol == null) missing.add(COL_DESCRIPTION)
         if (barcodeCol == null) missing.add(COL_BARCODE)
-        if (locationCol == null) missing.add(COL_LOCATION)
+        if (locationCols.isEmpty()) missing.add(COL_LOCATION)
         if (missing.isNotEmpty()) {
             throw ExcelFormatException("בקובץ חסרות העמודות הבאות: ${missing.joinToString(", ")}")
         }
@@ -218,7 +234,8 @@ object ExcelReader {
             if (sku.isEmpty()) continue
             val description = row[descCol!!]?.trim().orEmpty()
             val barcode = row[barcodeCol!!]?.trim().orEmpty()
-            val location = row[locationCol!!]?.trim().orEmpty()
+            val locations = locationCols.mapNotNull { row[it]?.trim() }.filter { it.isNotEmpty() }
+            val location = LocationUtils.format(locations.distinct())
             rawRows.add(ProductEntity(sku, description, barcode, location, order))
             order++
         }

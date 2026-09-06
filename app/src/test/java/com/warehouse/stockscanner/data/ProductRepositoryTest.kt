@@ -105,4 +105,43 @@ class ProductRepositoryTest {
         assertEquals(1, results.size)
         assertEquals("A", results.first().sku)
     }
+
+    @Test
+    fun `a product confirmed at a second location keeps both, not just the newest`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "7290012345678", "A-01-05", 0))
+        )
+
+        // Mirrors what ProductConfirmActivity does: read the existing location,
+        // add the newly scanned one, write the combined result back.
+        val existing = repository.findBySku("ABC-123")!!
+        val combined = com.warehouse.stockscanner.util.LocationUtils.add(existing.location, "B-02-01")
+        repository.updateProduct("ABC-123", existing.description, existing.barcode, combined)
+
+        val updated = repository.findBySku("ABC-123")!!
+        assertEquals("A-01-05, B-02-01", updated.location)
+    }
+
+    @Test
+    fun `findByLocation matches products at that location among several, without false substring matches`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("A", "in one place", "", "A-01-05", 0),
+                ProductEntity("B", "in two places", "", "A-01-05, B-02-01", 1),
+                ProductEntity("C", "elsewhere only", "", "A-01-10", 2),
+                ProductEntity("D", "no location yet", "", "", 3)
+            )
+        )
+
+        val atA0105 = repository.findByLocation("A-01-05")
+        assertEquals(setOf("A", "B"), atA0105.map { it.sku }.toSet())
+
+        val atB0201 = repository.findByLocation("B-02-01")
+        assertEquals(listOf("B"), atB0201.map { it.sku })
+
+        // "A-01-05" must not falsely match "A-01-10" or "A-01-05, B-02-01" via
+        // a naive prefix/substring check on the raw column value.
+        val atA011 = repository.findByLocation("A-01-1")
+        assertEquals(emptyList<String>(), atA011.map { it.sku })
+    }
 }
