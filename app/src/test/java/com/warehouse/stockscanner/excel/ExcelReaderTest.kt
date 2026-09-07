@@ -1,5 +1,6 @@
 package com.warehouse.stockscanner.excel
 
+import com.warehouse.stockscanner.data.ProductEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -58,6 +59,17 @@ class ExcelReaderTest {
         val result = fixture("sample_normal.xlsx").use { ExcelReader.readProductsFromStream(it) }
         val bySku = result.products.associateBy { it.sku }
         assertEquals("", bySku.getValue("A12-B45").barcode)
+    }
+
+    @Test
+    fun `a file with no quantity columns defaults every row to units mode with zero quantity`() {
+        val result = fixture("sample_normal.xlsx").use { ExcelReader.readProductsFromStream(it) }
+        val bySku = result.products.associateBy { it.sku }
+        val row = bySku.getValue("ABC-123")
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+        assertEquals(0, row.packageContent)
+        assertEquals(0, row.packageCount)
+        assertEquals(0, row.quantity)
     }
 
     @Test

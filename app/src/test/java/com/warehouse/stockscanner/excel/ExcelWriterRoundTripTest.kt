@@ -85,6 +85,32 @@ class ExcelWriterRoundTripTest {
     }
 
     @Test
+    fun `quantity fields round-trip exactly, both for units and package mode`() {
+        val products = listOf(
+            ProductEntity("UNITS-1", "מוצר ביחידות", "111", "A-01-05", 0, ProductEntity.TYPE_UNITS, 0, 0, 15),
+            ProductEntity("PKG-1", "מוצר באריזות", "222", "A-01-06", 1, ProductEntity.TYPE_PACKAGE, 12, 5, 60)
+        )
+        val bytes = ByteArrayOutputStream().also {
+            ExcelWriter.writeProductsToStream(it, products)
+        }.toByteArray()
+
+        val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
+        val bySku = result.products.associateBy { it.sku }
+
+        val units = bySku.getValue("UNITS-1")
+        assertEquals(ProductEntity.TYPE_UNITS, units.quantityType)
+        assertEquals(0, units.packageContent)
+        assertEquals(0, units.packageCount)
+        assertEquals(15, units.quantity)
+
+        val pkg = bySku.getValue("PKG-1")
+        assertEquals(ProductEntity.TYPE_PACKAGE, pkg.quantityType)
+        assertEquals(12, pkg.packageContent)
+        assertEquals(5, pkg.packageCount)
+        assertEquals(60, pkg.quantity)
+    }
+
+    @Test
     fun `a product with several locations round-trips as several rows sharing the same sku`() {
         val products = listOf(
             ProductEntity("MULTI-1", "מוצר משותף", "111", "A-01-05", 0),

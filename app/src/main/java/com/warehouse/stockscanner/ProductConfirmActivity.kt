@@ -1,10 +1,12 @@
 package com.warehouse.stockscanner
 
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -14,7 +16,10 @@ import kotlinx.coroutines.launch
 /**
  * Confirmation screen shown for every scanned product, whether it was found
  * directly by barcode or picked from the description search results.
- * Nothing is written to storage until the user taps "אישור ושמירה".
+ * Nothing is written to storage until the user taps "אישור ושמירה". Once
+ * confirmed, the inventory screen ([InventoryActivity]) opens right away to
+ * record the stock quantity for this row, before control returns to
+ * MainActivity (which then auto-continues to the next product).
  */
 class ProductConfirmActivity : AppCompatActivity() {
 
@@ -28,6 +33,14 @@ class ProductConfirmActivity : AppCompatActivity() {
     }
 
     private lateinit var repository: ProductRepository
+
+    // Whatever the inventory screen reports (it's always a save, never a
+    // cancel), that's what this whole confirm flow reports back to MainActivity.
+    private val inventoryLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            setResult(result.resultCode)
+            finish()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,8 +109,10 @@ class ProductConfirmActivity : AppCompatActivity() {
     private fun saveAndFinish(sku: String, description: String, barcode: String, location: String) {
         lifecycleScope.launch {
             repository.updateProduct(sku, description, barcode, location)
-            setResult(RESULT_OK)
-            finish()
+            val intent = Intent(this@ProductConfirmActivity, InventoryActivity::class.java)
+                .putExtra(InventoryActivity.EXTRA_SKU, sku)
+                .putExtra(InventoryActivity.EXTRA_LOCATION, location)
+            inventoryLauncher.launch(intent)
         }
     }
 }

@@ -113,6 +113,35 @@ class ProductRepository(private val context: Context, private val dao: ProductDa
         )
     }
 
+    /** The exact row for [sku] at [location] — used by the inventory screen to prefill an existing quantity. */
+    suspend fun findRow(sku: String, location: String): ProductEntity? =
+        dao.findBySkuAndLocation(sku, location.trim())
+
+    /**
+     * Records the stock quantity for [sku] at [location] (that row only —
+     * quantity is per location, like everything else on a row). Never
+     * creates a row: the location must already have been confirmed via
+     * [updateProduct] first.
+     */
+    suspend fun updateQuantity(
+        sku: String,
+        location: String,
+        quantityType: String,
+        packageContent: Int,
+        packageCount: Int,
+        quantity: Int
+    ) {
+        val row = dao.findBySkuAndLocation(sku, location.trim()) ?: return
+        dao.update(
+            row.copy(
+                quantityType = quantityType,
+                packageContent = packageContent,
+                packageCount = packageCount,
+                quantity = quantity
+            )
+        )
+    }
+
     suspend fun count(): Int = dao.count()
 
     /** Every product row currently assigned to exactly [location] — what's on that shelf right now. */
