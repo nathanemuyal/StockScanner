@@ -10,7 +10,7 @@ import androidx.room.RoomDatabase
  * closed mid-scan: every confirmed product update is persisted here
  * immediately, so nothing is lost if the app is killed.
  */
-@Database(entities = [ProductEntity::class], version = 1, exportSchema = false)
+@Database(entities = [ProductEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun productDao(): ProductDao
 
@@ -24,6 +24,19 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "stock_scanner.db"
                 ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
+            }
+        }
+
+        /**
+         * Test-only: each Robolectric test method gets a fresh Application
+         * (and storage), but this singleton would otherwise keep pointing at
+         * a previous test's now-torn-down database. Call from @Before so the
+         * next getInstance() builds a database tied to the current context.
+         */
+        fun resetForTests() {
+            synchronized(this) {
+                INSTANCE?.close()
+                INSTANCE = null
             }
         }
     }

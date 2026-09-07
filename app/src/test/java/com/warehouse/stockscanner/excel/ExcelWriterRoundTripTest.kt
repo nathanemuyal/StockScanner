@@ -70,32 +70,7 @@ class ExcelWriterRoundTripTest {
     }
 
     @Test
-    fun `a product with several locations gets one numbered column per location`() {
-        val products = listOf(
-            ProductEntity("MULTI-1", "מוצר משותף", "111", "A-01-05, B-02-01, C-03-01", 0),
-            ProductEntity("SINGLE-1", "מוצר יחיד", "222", "A-01-06", 1)
-        )
-        val bytes = ByteArrayOutputStream().also {
-            ExcelWriter.writeProductsToStream(it, products)
-        }.toByteArray()
-
-        val sheetXml = sheetXmlOf(bytes)
-        // The header row must contain the numbered columns, one per location
-        // the fullest product needs.
-        assertTrue(sheetXml.contains("<t xml:space=\"preserve\">מיקום</t>"))
-        assertTrue(sheetXml.contains("<t xml:space=\"preserve\">מיקום 2</t>"))
-        assertTrue(sheetXml.contains("<t xml:space=\"preserve\">מיקום 3</t>"))
-
-        val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
-        val bySku = result.products.associateBy { it.sku }
-        assertEquals("A-01-05, B-02-01, C-03-01", bySku.getValue("MULTI-1").location)
-        // SINGLE-1's extra location cells were written blank, not "A-01-06"
-        // repeated or garbage — round-tripping must not invent locations.
-        assertEquals("A-01-06", bySku.getValue("SINGLE-1").location)
-    }
-
-    @Test
-    fun `no product with more than one location means no extra columns are written`() {
+    fun `only ever writes a single מיקום column, never numbered extras`() {
         val products = listOf(
             ProductEntity("A", "x", "", "A-01-05", 0),
             ProductEntity("B", "y", "", "", 1)
@@ -105,6 +80,28 @@ class ExcelWriterRoundTripTest {
         }.toByteArray()
 
         val sheetXml = sheetXmlOf(bytes)
+        assertTrue(sheetXml.contains("<t xml:space=\"preserve\">מיקום</t>"))
         assertFalse(sheetXml.contains("מיקום 2"))
+    }
+
+    @Test
+    fun `a product with several locations round-trips as several rows sharing the same sku`() {
+        val products = listOf(
+            ProductEntity("MULTI-1", "מוצר משותף", "111", "A-01-05", 0),
+            ProductEntity("MULTI-1", "מוצר משותף", "111", "B-02-01", 1),
+            ProductEntity("MULTI-1", "מוצר משותף", "111", "C-03-01", 2),
+            ProductEntity("SINGLE-1", "מוצר יחיד", "222", "A-01-06", 3)
+        )
+        val bytes = ByteArrayOutputStream().also {
+            ExcelWriter.writeProductsToStream(it, products)
+        }.toByteArray()
+
+        val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
+        val multiRows = result.products.filter { it.sku == "MULTI-1" }
+        assertEquals(3, multiRows.size)
+        assertEquals(setOf("A-01-05", "B-02-01", "C-03-01"), multiRows.map { it.location }.toSet())
+
+        val bySku = result.products.associateBy { it.sku }
+        assertEquals("A-01-06", bySku.getValue("SINGLE-1").location)
     }
 }

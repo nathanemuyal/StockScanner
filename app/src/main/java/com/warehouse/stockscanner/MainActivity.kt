@@ -1,7 +1,6 @@
 package com.warehouse.stockscanner
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -13,9 +12,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import com.warehouse.stockscanner.data.SessionPrefs
-import com.warehouse.stockscanner.excel.ExcelFormatException
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -23,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var repository: ProductRepository
     private lateinit var prefs: SessionPrefs
 
+    private lateinit var btnExcelActions: Button
     private lateinit var tvFileName: TextView
     private lateinit var tvTotalProducts: TextView
     private lateinit var tvCurrentLocation: TextView
@@ -30,39 +30,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScanLocation: Button
     private lateinit var btnScanProduct: Button
     private lateinit var btnFinishLocation: Button
-    private lateinit var btnSaveExcel: Button
     private lateinit var tvScannedProductsLabel: TextView
     private lateinit var recyclerScannedProducts: RecyclerView
     private lateinit var scannedProductsAdapter: SearchResultAdapter
 
     /** Barcode that was scanned but not found — kept around while the user searches by description. */
     private var pendingScannedBarcode: String? = null
-
-    private val openDocumentLauncher =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) loadExcel(uri)
-        }
-
-    private val createDocumentLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.CreateDocument(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        ) { uri ->
-            if (uri != null) {
-                lifecycleScope.launch {
-                    if (saveExcel(uri, isOverwrite = false)) {
-                        // This newly chosen file is now "the file we're working
-                        // on" — future saves overwrite it directly, no more picker.
-                        releasePersistedWriteAccess(prefs.fileUri)
-                        takePersistedWriteAccess(uri)
-                        prefs.fileUri = uri.toString()
-                        prefs.fileName = queryFileName(uri) ?: prefs.fileName
-                        updateUiState()
-                    }
-                }
-            }
-        }
 
     private val scanLocationLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -107,13 +80,7 @@ class MainActivity : AppCompatActivity() {
                     lifecycleScope.launch {
                         val product = repository.findBySku(sku)
                         if (product != null) {
-                            openConfirmScreen(
-                                sku = product.sku,
-                                description = product.description,
-                                existingBarcode = product.barcode,
-                                scannedBarcode = scannedBarcode,
-                                existingLocation = product.location
-                            )
+                            openConfirmScreen(product, scannedBarcode)
                         }
                     }
                 }
@@ -127,6 +94,7 @@ class MainActivity : AppCompatActivity() {
         repository = (application as StockScannerApp).repository
         prefs = SessionPrefs(this)
 
+        btnExcelActions = findViewById(R.id.btnExcelActions)
         tvFileName = findViewById(R.id.tvFileName)
         tvTotalProducts = findViewById(R.id.tvTotalProducts)
         tvCurrentLocation = findViewById(R.id.tvCurrentLocation)
@@ -134,7 +102,6 @@ class MainActivity : AppCompatActivity() {
         btnScanLocation = findViewById(R.id.btnScanLocation)
         btnScanProduct = findViewById(R.id.btnScanProduct)
         btnFinishLocation = findViewById(R.id.btnFinishLocation)
-        btnSaveExcel = findViewById(R.id.btnSaveExcel)
         tvScannedProductsLabel = findViewById(R.id.tvScannedProductsLabel)
         recyclerScannedProducts = findViewById(R.id.recyclerScannedProducts)
 
@@ -142,13 +109,11 @@ class MainActivity : AppCompatActivity() {
         recyclerScannedProducts.layoutManager = LinearLayoutManager(this)
         recyclerScannedProducts.adapter = scannedProductsAdapter
 
-        findViewById<Button>(R.id.btnLoadExcel).setOnClickListener {
-            openDocumentLauncher.launch(
-                arrayOf(
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/octet-stream"
-                )
-            )
+        // Picking and saving the Excel file both live on their own dedicated
+        // screen — kept off the main scanning flow so neither can happen
+        // with a stray tap while scanning.
+        btnExcelActions.setOnClickListener {
+            startActivity(Intent(this, ExcelActionsActivity::class.java))
         }
 
         btnScanLocation.setOnClickListener {
@@ -170,27 +135,6 @@ class MainActivity : AppCompatActivity() {
             updateUiState()
         }
 
-        btnSaveExcel.setOnClickListener {
-            lifecycleScope.launch {
-                if (repository.count() == 0) {
-                    Toast.makeText(this@MainActivity, "אין נתונים לשמירה, טען קובץ Excel קודם", Toast.LENGTH_LONG).show()
-                    return@launch
-                }
-
-                // Update the file we're already working on in place. Only if
-                // that's not possible (permission lost, file moved/deleted,
-                // or this is somehow the very first save) do we fall back to
-                // asking where to save, like "Save As".
-                val existingUri = prefs.fileUri?.let { Uri.parse(it) }
-                if (existingUri != null && saveExcel(existingUri, isOverwrite = true)) {
-                    return@launch
-                }
-
-                val suggestedName = prefs.fileName ?: "products_updated.xlsx"
-                createDocumentLauncher.launch(suggestedName)
-            }
-        }
-
         updateUiState()
     }
 
@@ -206,109 +150,11 @@ class MainActivity : AppCompatActivity() {
         scanProductLauncher.launch(intent)
     }
 
-    private fun loadExcel(uri: Uri) {
-        lifecycleScope.launch {
-            try {
-                val result = repository.loadFromExcel(uri)
-                val name = queryFileName(uri) ?: "products.xlsx"
-
-                // So "שמור Excel" can write straight back to this same file
-                // later — even after the app is closed and reopened — instead
-                // of only being able to save it once per grant.
-                releasePersistedWriteAccess(prefs.fileUri)
-                takePersistedWriteAccess(uri)
-
-                prefs.resetForNewFile(name, uri.toString())
-                updateUiState()
-
-                if (result.duplicateSkuRows > 0 || result.duplicateBarcodeRows > 0) {
-                    val warnings = ArrayList<String>()
-                    if (result.duplicateSkuRows > 0) {
-                        warnings.add("${result.duplicateSkuRows} שורות עם מקט כפול (נלקחה השורה האחרונה עבור כל מקט)")
-                    }
-                    if (result.duplicateBarcodeRows > 0) {
-                        warnings.add("${result.duplicateBarcodeRows} שורות עם ברקוד כפול (בסריקה ייבחר מוצר אחד מביניהם)")
-                    }
-                    showError(
-                        "נטענו ${result.products.size} מוצרים — לתשומת לבכם",
-                        warnings.joinToString("\n")
-                    )
-                } else {
-                    Toast.makeText(this@MainActivity, "נטענו ${result.products.size} מוצרים", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: ExcelFormatException) {
-                showError("שגיאה בטעינת הקובץ", e.message ?: "שגיאה לא ידועה")
-            } catch (e: Exception) {
-                showError("שגיאה בטעינת הקובץ", e.message ?: "שגיאה לא ידועה")
-            }
-        }
-    }
-
-    /** Best-effort: some document providers don't support persistable grants at all. */
-    private fun takePersistedWriteAccess(uri: Uri) {
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        } catch (e: Exception) {
-            // Falls back to the "Save As" flow at save time if this didn't stick.
-        }
-    }
-
-    private fun releasePersistedWriteAccess(uriString: String?) {
-        val uri = uriString?.let { Uri.parse(it) } ?: return
-        try {
-            contentResolver.releasePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        } catch (e: Exception) {
-            // Nothing to clean up if it was never granted.
-        }
-    }
-
-    private fun queryFileName(uri: Uri): String? = try {
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
-        }
-    } catch (e: Exception) {
-        null
-    }
-
-    /**
-     * Writes the current data to [uri]. Returns true on success so the caller
-     * can decide whether a fallback (e.g. "Save As") is needed. [isOverwrite]
-     * only affects the confirmation message shown to the user.
-     */
-    private suspend fun saveExcel(uri: Uri, isOverwrite: Boolean): Boolean {
-        return try {
-            repository.exportToExcel(uri)
-            val message = if (isOverwrite) "הקובץ עודכן בהצלחה" else "הקובץ נשמר בהצלחה"
-            Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
-            true
-        } catch (e: Exception) {
-            if (!isOverwrite) {
-                showError("שגיאה בשמירת הקובץ", e.message ?: "שגיאה לא ידועה")
-            }
-            // When overwriting silently fails (permission lost, file moved/
-            // deleted), the caller falls back to "Save As" instead of erroring.
-            false
-        }
-    }
-
     private fun handleScannedBarcode(barcode: String) {
         lifecycleScope.launch {
             val product = repository.findByBarcode(barcode)
             if (product != null) {
-                openConfirmScreen(
-                    sku = product.sku,
-                    description = product.description,
-                    existingBarcode = product.barcode,
-                    scannedBarcode = barcode,
-                    existingLocation = product.location
-                )
+                openConfirmScreen(product, barcode)
             } else {
                 showBarcodeNotFound(barcode)
             }
@@ -327,30 +173,16 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun openConfirmScreen(
-        sku: String,
-        description: String,
-        existingBarcode: String,
-        scannedBarcode: String,
-        existingLocation: String
-    ) {
+    private fun openConfirmScreen(product: ProductLookup, scannedBarcode: String) {
         val currentLocation = prefs.currentLocation ?: return
         val intent = Intent(this, ProductConfirmActivity::class.java)
-            .putExtra(ProductConfirmActivity.EXTRA_SKU, sku)
-            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, description)
-            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, existingBarcode)
+            .putExtra(ProductConfirmActivity.EXTRA_SKU, product.sku)
+            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, product.description)
+            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, product.barcode)
             .putExtra(ProductConfirmActivity.EXTRA_SCANNED_BARCODE, scannedBarcode)
-            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATION, existingLocation)
+            .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList(product.existingLocations))
             .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, currentLocation)
         productConfirmLauncher.launch(intent)
-    }
-
-    private fun showError(title: String, message: String) {
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setMessage(message)
-            .setPositiveButton("אישור", null)
-            .show()
     }
 
     private fun updateUiState() {
@@ -361,6 +193,10 @@ class MainActivity : AppCompatActivity() {
             tvApprovedCount.text = "מוצרים שאושרו: ${prefs.approvedCount}"
 
             val location = prefs.currentLocation
+            // Excel actions (choosing/saving a file) are only offered when no
+            // location scan is in progress, so neither can happen by mistake
+            // mid-location.
+            btnExcelActions.visibility = if (location.isNullOrBlank()) View.VISIBLE else View.GONE
             if (location.isNullOrBlank()) {
                 tvCurrentLocation.text = "📍 אין מיקום פעיל"
                 btnScanLocation.visibility = View.VISIBLE

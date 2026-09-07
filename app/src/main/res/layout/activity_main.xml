@@ -21,10 +21,10 @@
             android:layout_marginBottom="24dp" />
 
         <Button
-            android:id="@+id/btnLoadExcel"
+            android:id="@+id/btnExcelActions"
             android:layout_width="match_parent"
             android:layout_height="64dp"
-            android:text="📁 בחר קובץ Excel"
+            android:text="📗 פעולות Excel"
             android:textSize="18sp" />
 
         <TextView
@@ -114,14 +114,6 @@
             android:background="@drawable/bg_card"
             android:clipToOutline="true"
             android:visibility="gone" />
-
-        <Button
-            android:id="@+id/btnSaveExcel"
-            android:layout_width="match_parent"
-            android:layout_height="64dp"
-            android:layout_marginTop="24dp"
-            android:text="💾 שמור Excel"
-            android:textSize="18sp" />
 
     </LinearLayout>
 </ScrollView>

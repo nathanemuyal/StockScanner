@@ -35,5 +35,9 @@
             android:name=".SearchActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ExcelActionsActivity"
+            android:exported="false" />
+
     </application>
 </manifest>
