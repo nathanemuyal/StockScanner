@@ -1,16 +1,23 @@
 package com.warehouse.stockscanner.data
 
+import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.warehouse.stockscanner.excel.ExcelReader
+import com.warehouse.stockscanner.excel.ExcelWriter
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Exercises the row-per-location contract from the spec directly against
@@ -22,17 +29,27 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class ProductRepositoryTest {
 
+    private lateinit var context: android.content.Context
     private lateinit var db: AppDatabase
     private lateinit var repository: ProductRepository
 
     @Before
     fun setUp() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        context = ApplicationProvider.getApplicationContext()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
         repository = ProductRepository(context, db.productDao())
     }
+
+    /** Writes [products] as a real .xlsx to a temp file and returns a Uri to it, as if picked via SAF. */
+    private fun writeSourceFile(products: List<ProductEntity>): Uri {
+        val file = File.createTempFile("source", ".xlsx", context.cacheDir)
+        FileOutputStream(file).use { ExcelWriter.writeProductsToStream(it, products) }
+        return Uri.fromFile(file)
+    }
+
+    private fun workingCopyFile() = File(context.filesDir, "working_products.xlsx")
 
     @After
     fun tearDown() {
@@ -176,5 +193,56 @@ class ProductRepositoryTest {
         // "A-01-05" must not falsely match "A-01-10" via a substring/prefix check.
         val atA011 = repository.findByLocation("A-01-1")
         assertEquals(emptyList<String>(), atA011.map { it.sku })
+    }
+
+    @Test
+    fun `loadFromExcel creates a private working copy immediately, separate from the source file`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
+        )
+
+        assertFalse("no working copy should exist before any file is loaded", workingCopyFile().exists())
+
+        repository.loadFromExcel(sourceUri)
+
+        assertTrue("loading a file must create the working copy right away", workingCopyFile().exists())
+        val workingCopyProducts = workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(1, workingCopyProducts.size)
+        assertEquals("ABC-123", workingCopyProducts.first().sku)
+        assertEquals("A-01-05", workingCopyProducts.first().location)
+    }
+
+    @Test
+    fun `saveWorkingCopy is the only thing that writes to disk — updateProduct alone never does`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
+        )
+        repository.loadFromExcel(sourceUri)
+        val snapshotAfterLoad = workingCopyFile().readBytes()
+
+        // A confirmed scan updates the database immediately, but must NOT
+        // touch the working copy on disk by itself — only an explicit save
+        // (see MainActivity/ExcelActionsActivity) does that.
+        repository.updateProduct("ABC-123", "פילטר שמן טויוטה", "111", "B-02-01")
+        assertArrayEquals(snapshotAfterLoad, workingCopyFile().readBytes())
+        val stillOnlyOneLocationOnDisk =
+            workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(1, stillOnlyOneLocationOnDisk.size)
+
+        repository.saveWorkingCopy()
+
+        val afterSave = workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(2, afterSave.size)
+        assertEquals(setOf("A-01-05", "B-02-01"), afterSave.map { it.location }.toSet())
+    }
+
+    @Test
+    fun `loading a different source file replaces the working copy, not merges with it`() = runBlocking {
+        repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("OLD", "old product", "", "A-01-01", 0))))
+        repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("NEW", "new product", "", "A-01-02", 0))))
+
+        assertEquals(1, repository.count())
+        assertNull(repository.findBySku("OLD"))
+        assertEquals("new product", repository.findBySku("NEW")!!.description)
     }
 }
