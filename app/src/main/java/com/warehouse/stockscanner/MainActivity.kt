@@ -49,7 +49,19 @@ class MainActivity : AppCompatActivity() {
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         ) { uri ->
-            if (uri != null) saveExcel(uri)
+            if (uri != null) {
+                lifecycleScope.launch {
+                    if (saveExcel(uri, isOverwrite = false)) {
+                        // This newly chosen file is now "the file we're working
+                        // on" — future saves overwrite it directly, no more picker.
+                        releasePersistedWriteAccess(prefs.fileUri)
+                        takePersistedWriteAccess(uri)
+                        prefs.fileUri = uri.toString()
+                        prefs.fileName = queryFileName(uri) ?: prefs.fileName
+                        updateUiState()
+                    }
+                }
+            }
         }
 
     private val scanLocationLauncher =
@@ -164,6 +176,16 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "אין נתונים לשמירה, טען קובץ Excel קודם", Toast.LENGTH_LONG).show()
                     return@launch
                 }
+
+                // Update the file we're already working on in place. Only if
+                // that's not possible (permission lost, file moved/deleted,
+                // or this is somehow the very first save) do we fall back to
+                // asking where to save, like "Save As".
+                val existingUri = prefs.fileUri?.let { Uri.parse(it) }
+                if (existingUri != null && saveExcel(existingUri, isOverwrite = true)) {
+                    return@launch
+                }
+
                 val suggestedName = prefs.fileName ?: "products_updated.xlsx"
                 createDocumentLauncher.launch(suggestedName)
             }
@@ -189,6 +211,13 @@ class MainActivity : AppCompatActivity() {
             try {
                 val result = repository.loadFromExcel(uri)
                 val name = queryFileName(uri) ?: "products.xlsx"
+
+                // So "שמור Excel" can write straight back to this same file
+                // later — even after the app is closed and reopened — instead
+                // of only being able to save it once per grant.
+                releasePersistedWriteAccess(prefs.fileUri)
+                takePersistedWriteAccess(uri)
+
                 prefs.resetForNewFile(name, uri.toString())
                 updateUiState()
 
@@ -215,6 +244,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Best-effort: some document providers don't support persistable grants at all. */
+    private fun takePersistedWriteAccess(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            // Falls back to the "Save As" flow at save time if this didn't stick.
+        }
+    }
+
+    private fun releasePersistedWriteAccess(uriString: String?) {
+        val uri = uriString?.let { Uri.parse(it) } ?: return
+        try {
+            contentResolver.releasePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            // Nothing to clean up if it was never granted.
+        }
+    }
+
     private fun queryFileName(uri: Uri): String? = try {
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -224,14 +277,24 @@ class MainActivity : AppCompatActivity() {
         null
     }
 
-    private fun saveExcel(uri: Uri) {
-        lifecycleScope.launch {
-            try {
-                repository.exportToExcel(uri)
-                Toast.makeText(this@MainActivity, "הקובץ נשמר בהצלחה", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
+    /**
+     * Writes the current data to [uri]. Returns true on success so the caller
+     * can decide whether a fallback (e.g. "Save As") is needed. [isOverwrite]
+     * only affects the confirmation message shown to the user.
+     */
+    private suspend fun saveExcel(uri: Uri, isOverwrite: Boolean): Boolean {
+        return try {
+            repository.exportToExcel(uri)
+            val message = if (isOverwrite) "הקובץ עודכן בהצלחה" else "הקובץ נשמר בהצלחה"
+            Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+            true
+        } catch (e: Exception) {
+            if (!isOverwrite) {
                 showError("שגיאה בשמירת הקובץ", e.message ?: "שגיאה לא ידועה")
             }
+            // When overwriting silently fails (permission lost, file moved/
+            // deleted), the caller falls back to "Save As" instead of erroring.
+            false
         }
     }
 
