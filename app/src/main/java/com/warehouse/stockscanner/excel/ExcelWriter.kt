@@ -1,9 +1,6 @@
 package com.warehouse.stockscanner.excel
 
-import android.content.Context
-import android.net.Uri
 import com.warehouse.stockscanner.data.ProductEntity
-import com.warehouse.stockscanner.util.LocationUtils
 import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.util.zip.ZipEntry
@@ -22,12 +19,6 @@ object ExcelWriter {
     private const val COL_DESCRIPTION = "תאור"
     private const val COL_BARCODE = "ברקוד"
     private const val COL_LOCATION = "מיקום"
-
-    fun writeProducts(context: Context, uri: Uri, products: List<ProductEntity>) {
-        val out = context.contentResolver.openOutputStream(uri)
-            ?: throw IllegalStateException("לא ניתן לכתוב לקובץ שנבחר")
-        out.use { writeProductsToStream(it, products) }
-    }
 
     /**
      * Core writing logic, decoupled from Context/Uri so it can also be driven
@@ -81,20 +72,10 @@ object ExcelWriter {
     }
 
     private fun sheetXml(products: List<ProductEntity>): String {
-        // A product with several locations gets one column per location
-        // ("מיקום", "מיקום 2", "מיקום 3", ...) rather than a delimited cell.
-        // The column count is however many the fullest product needs; every
-        // other row just leaves the extra cells blank.
-        val locationLists = products.map { LocationUtils.parse(it.location) }
-        val locationColumnCount = maxOf(1, locationLists.maxOfOrNull { it.size } ?: 1)
-
-        val headers = ArrayList<String>()
-        headers.add(COL_SKU)
-        headers.add(COL_DESCRIPTION)
-        headers.add(COL_BARCODE)
-        for (i in 1..locationColumnCount) {
-            headers.add(if (i == 1) COL_LOCATION else "$COL_LOCATION $i")
-        }
+        // A product with several locations is several rows sharing the same
+        // sku/description/barcode, each with its own single מיקום value —
+        // never a combined cell or extra numbered columns.
+        val headers = listOf(COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION)
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -111,16 +92,12 @@ object ExcelWriter {
         sb.append("</row>")
 
         var rowNum = 2
-        products.forEachIndexed { productIndex, product ->
+        for (product in products) {
             sb.append("<row r=\"$rowNum\">")
             sb.append(cell("A", rowNum, product.sku))
             sb.append(cell("B", rowNum, product.description))
             sb.append(cell("C", rowNum, product.barcode))
-            val locations = locationLists[productIndex]
-            for (i in 0 until locationColumnCount) {
-                val value = locations.getOrNull(i).orEmpty()
-                sb.append(cell(ExcelColumns.indexToLetter(3 + i), rowNum, value))
-            }
+            sb.append(cell("D", rowNum, product.location))
             sb.append("</row>")
             rowNum++
         }

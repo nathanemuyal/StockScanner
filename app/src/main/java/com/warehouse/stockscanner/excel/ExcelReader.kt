@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import android.util.Xml
 import com.warehouse.stockscanner.data.ProductEntity
-import com.warehouse.stockscanner.util.LocationUtils
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
@@ -12,13 +11,13 @@ import java.util.zip.ZipInputStream
 class ExcelFormatException(message: String) : Exception(message)
 
 /**
- * Result of reading the source file. [duplicateSkuRows] and [duplicateBarcodeRows]
+ * Result of reading the source file. [duplicateRows] and [duplicateBarcodeRows]
  * let the caller warn the user about data-quality issues instead of silently
  * dropping or mismatching rows.
  */
 data class ExcelLoadResult(
     val products: List<ProductEntity>,
-    val duplicateSkuRows: Int,
+    val duplicateRows: Int,
     val duplicateBarcodeRows: Int
 )
 
@@ -37,9 +36,11 @@ object ExcelReader {
     private const val COL_BARCODE = "ברקוד"
     private const val COL_LOCATION = "מיקום"
 
-    // A product with more than one location gets extra columns "מיקום 2",
-    // "מיקום 3", ... rather than a single delimited cell — this matches the
-    // column-per-location layout the file is expected to use.
+    // The working file only ever has a single "מיקום" column — a product at
+    // several locations is several rows, not several columns. Numbered
+    // headers ("מיקום 2", "מיקום 3", ...) are still recognized here purely
+    // for backward compatibility with files produced by an older version of
+    // this app; every value found under any of them becomes its own row.
     private val LOCATION_HEADER_REGEX = Regex("^${Regex.escape(COL_LOCATION)}(?:\\s+(\\d+))?$")
 
     fun readProducts(context: Context, uri: Uri): ExcelLoadResult {
@@ -206,7 +207,8 @@ object ExcelReader {
         val barcodeCol = headers[COL_BARCODE]
 
         // Every header matching "מיקום" or "מיקום <n>", in ascending order of
-        // n (the bare "מיקום" counts as 1), combined into one internal value.
+        // n (the bare "מיקום" counts as 1) — each becomes its own row for the
+        // sku (see the expansion below), rather than one merged value.
         val locationCols = headers.entries
             .mapNotNull { (header, colIndex) ->
                 val match = LOCATION_HEADER_REGEX.find(header) ?: return@mapNotNull null
@@ -225,38 +227,54 @@ object ExcelReader {
             throw ExcelFormatException("בקובץ חסרות העמודות הבאות: ${missing.joinToString(", ")}")
         }
 
-        // Collect every data row first (including any duplicate skus), preserving
-        // file order, so duplicates can be reported rather than silently mismatched.
-        val rawRows = ArrayList<ProductEntity>()
-        var order = 0
+        // Collect every data row, expanding a row that lists several locations
+        // (legacy "מיקום 2", "מיקום 3" columns) into one tuple per location —
+        // a product with N locations becomes N rows, not one row with a
+        // combined cell. A row with no location at all still becomes one row,
+        // with a blank מיקום, so the product exists even before it's shelved.
+        data class RawTuple(val sku: String, val description: String, val barcode: String, val location: String)
+
+        val rawTuples = ArrayList<RawTuple>()
         for (row in dataRows) {
             val sku = row[skuCol!!]?.trim().orEmpty()
             if (sku.isEmpty()) continue
             val description = row[descCol!!]?.trim().orEmpty()
             val barcode = row[barcodeCol!!]?.trim().orEmpty()
-            val locations = locationCols.mapNotNull { row[it]?.trim() }.filter { it.isNotEmpty() }
-            val location = LocationUtils.format(locations.distinct())
-            rawRows.add(ProductEntity(sku, description, barcode, location, order))
-            order++
+            val locations = locationCols.mapNotNull { row[it]?.trim() }.filter { it.isNotEmpty() }.distinct()
+            if (locations.isEmpty()) {
+                rawTuples.add(RawTuple(sku, description, barcode, ""))
+            } else {
+                for (location in locations) {
+                    rawTuples.add(RawTuple(sku, description, barcode, location))
+                }
+            }
         }
 
-        // De-duplicate by sku deterministically: if the same sku appears more than
-        // once, the LAST row in the file wins (matches how a re-export would behave),
-        // while the row's original position in the file is preserved for write-back.
-        val bySku = LinkedHashMap<String, ProductEntity>()
-        for (p in rawRows) {
-            bySku[p.sku] = p
+        // De-duplicate by (sku, location) deterministically: if the exact same
+        // product/location pair appears more than once, the LAST row in the
+        // file wins (matches how a re-export would behave), while the file
+        // order otherwise decides row-write-back order.
+        val bySkuAndLocation = LinkedHashMap<Pair<String, String>, RawTuple>()
+        for (t in rawTuples) {
+            bySkuAndLocation[t.sku to t.location] = t
         }
-        val products = bySku.values.mapIndexed { index, p -> p.copy(rowOrder = index) }
-        val duplicateSkuRows = rawRows.size - bySku.size
+        val products = bySkuAndLocation.values.mapIndexed { index, t ->
+            ProductEntity(t.sku, t.description, t.barcode, t.location, index)
+        }
+        val duplicateRows = rawTuples.size - bySkuAndLocation.size
 
-        // Counted on the already-deduplicated products, not the raw rows: the same
-        // sku repeated with the same barcode (a re-stated row) is not a real
-        // barcode collision between two different products.
-        val nonBlankBarcodes = products.map { it.barcode }.filter { it.isNotBlank() }
-        val duplicateBarcodeRows = nonBlankBarcodes.size - nonBlankBarcodes.distinct().size
+        // A barcode collision only matters between two DIFFERENT products —
+        // the same sku legitimately repeats its barcode across its own
+        // location rows, so this is checked per distinct sku (its first
+        // non-blank barcode), not per row.
+        val barcodeBySku = LinkedHashMap<String, String>()
+        for (p in products) {
+            if (p.barcode.isNotBlank()) barcodeBySku.putIfAbsent(p.sku, p.barcode)
+        }
+        val barcodes = barcodeBySku.values.toList()
+        val duplicateBarcodeRows = barcodes.size - barcodes.distinct().size
 
-        return ExcelLoadResult(products, duplicateSkuRows, duplicateBarcodeRows)
+        return ExcelLoadResult(products, duplicateRows, duplicateBarcodeRows)
     }
 
     private fun buildHeaderMap(row: Map<Int, String>): Map<String, Int> {

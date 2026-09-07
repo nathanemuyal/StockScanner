@@ -3,6 +3,8 @@ package com.warehouse.stockscanner
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
@@ -10,9 +12,11 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.Toolbar
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import com.warehouse.stockscanner.data.SessionPrefs
 import com.warehouse.stockscanner.excel.ExcelFormatException
@@ -30,7 +34,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScanLocation: Button
     private lateinit var btnScanProduct: Button
     private lateinit var btnFinishLocation: Button
-    private lateinit var btnSaveExcel: Button
     private lateinit var tvScannedProductsLabel: TextView
     private lateinit var recyclerScannedProducts: RecyclerView
     private lateinit var scannedProductsAdapter: SearchResultAdapter
@@ -41,27 +44,6 @@ class MainActivity : AppCompatActivity() {
     private val openDocumentLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) loadExcel(uri)
-        }
-
-    private val createDocumentLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.CreateDocument(
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        ) { uri ->
-            if (uri != null) {
-                lifecycleScope.launch {
-                    if (saveExcel(uri, isOverwrite = false)) {
-                        // This newly chosen file is now "the file we're working
-                        // on" — future saves overwrite it directly, no more picker.
-                        releasePersistedWriteAccess(prefs.fileUri)
-                        takePersistedWriteAccess(uri)
-                        prefs.fileUri = uri.toString()
-                        prefs.fileName = queryFileName(uri) ?: prefs.fileName
-                        updateUiState()
-                    }
-                }
-            }
         }
 
     private val scanLocationLauncher =
@@ -107,13 +89,7 @@ class MainActivity : AppCompatActivity() {
                     lifecycleScope.launch {
                         val product = repository.findBySku(sku)
                         if (product != null) {
-                            openConfirmScreen(
-                                sku = product.sku,
-                                description = product.description,
-                                existingBarcode = product.barcode,
-                                scannedBarcode = scannedBarcode,
-                                existingLocation = product.location
-                            )
+                            openConfirmScreen(product, scannedBarcode)
                         }
                     }
                 }
@@ -127,6 +103,8 @@ class MainActivity : AppCompatActivity() {
         repository = (application as StockScannerApp).repository
         prefs = SessionPrefs(this)
 
+        setSupportActionBar(findViewById<Toolbar>(R.id.toolbar))
+
         tvFileName = findViewById(R.id.tvFileName)
         tvTotalProducts = findViewById(R.id.tvTotalProducts)
         tvCurrentLocation = findViewById(R.id.tvCurrentLocation)
@@ -134,7 +112,6 @@ class MainActivity : AppCompatActivity() {
         btnScanLocation = findViewById(R.id.btnScanLocation)
         btnScanProduct = findViewById(R.id.btnScanProduct)
         btnFinishLocation = findViewById(R.id.btnFinishLocation)
-        btnSaveExcel = findViewById(R.id.btnSaveExcel)
         tvScannedProductsLabel = findViewById(R.id.tvScannedProductsLabel)
         recyclerScannedProducts = findViewById(R.id.recyclerScannedProducts)
 
@@ -170,33 +147,45 @@ class MainActivity : AppCompatActivity() {
             updateUiState()
         }
 
-        btnSaveExcel.setOnClickListener {
-            lifecycleScope.launch {
-                if (repository.count() == 0) {
-                    Toast.makeText(this@MainActivity, "אין נתונים לשמירה, טען קובץ Excel קודם", Toast.LENGTH_LONG).show()
-                    return@launch
-                }
-
-                // Update the file we're already working on in place. Only if
-                // that's not possible (permission lost, file moved/deleted,
-                // or this is somehow the very first save) do we fall back to
-                // asking where to save, like "Save As".
-                val existingUri = prefs.fileUri?.let { Uri.parse(it) }
-                if (existingUri != null && saveExcel(existingUri, isOverwrite = true)) {
-                    return@launch
-                }
-
-                val suggestedName = prefs.fileName ?: "products_updated.xlsx"
-                createDocumentLauncher.launch(suggestedName)
-            }
-        }
-
         updateUiState()
     }
 
     override fun onResume() {
         super.onResume()
         updateUiState()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_main, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == R.id.action_save_excel) {
+            saveExcel()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    /**
+     * Writes the current data to the working copy — a deliberate action the
+     * worker takes from the overflow menu, typically once at the end of the
+     * whole process. Never happens automatically after a scan.
+     */
+    private fun saveExcel() {
+        lifecycleScope.launch {
+            if (repository.count() == 0) {
+                Toast.makeText(this@MainActivity, "אין נתונים לשמירה, טען קובץ Excel קודם", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            try {
+                repository.saveWorkingCopy()
+                Toast.makeText(this@MainActivity, "הקובץ נשמר בהצלחה", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                showError("שגיאה בשמירת הקובץ", e.message ?: "שגיאה לא ידועה")
+            }
+        }
     }
 
     private fun launchScanProduct() {
@@ -212,19 +201,15 @@ class MainActivity : AppCompatActivity() {
                 val result = repository.loadFromExcel(uri)
                 val name = queryFileName(uri) ?: "products.xlsx"
 
-                // So "שמור Excel" can write straight back to this same file
-                // later — even after the app is closed and reopened — instead
-                // of only being able to save it once per grant.
-                releasePersistedWriteAccess(prefs.fileUri)
-                takePersistedWriteAccess(uri)
-
+                // The picked file itself is never opened for writing again —
+                // loadFromExcel already created a fresh working copy for it.
                 prefs.resetForNewFile(name, uri.toString())
                 updateUiState()
 
-                if (result.duplicateSkuRows > 0 || result.duplicateBarcodeRows > 0) {
+                if (result.duplicateRows > 0 || result.duplicateBarcodeRows > 0) {
                     val warnings = ArrayList<String>()
-                    if (result.duplicateSkuRows > 0) {
-                        warnings.add("${result.duplicateSkuRows} שורות עם מקט כפול (נלקחה השורה האחרונה עבור כל מקט)")
+                    if (result.duplicateRows > 0) {
+                        warnings.add("${result.duplicateRows} שורות כפולות (אותו מקט ואותו מיקום — נלקחה השורה האחרונה)")
                     }
                     if (result.duplicateBarcodeRows > 0) {
                         warnings.add("${result.duplicateBarcodeRows} שורות עם ברקוד כפול (בסריקה ייבחר מוצר אחד מביניהם)")
@@ -244,30 +229,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Best-effort: some document providers don't support persistable grants at all. */
-    private fun takePersistedWriteAccess(uri: Uri) {
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        } catch (e: Exception) {
-            // Falls back to the "Save As" flow at save time if this didn't stick.
-        }
-    }
-
-    private fun releasePersistedWriteAccess(uriString: String?) {
-        val uri = uriString?.let { Uri.parse(it) } ?: return
-        try {
-            contentResolver.releasePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        } catch (e: Exception) {
-            // Nothing to clean up if it was never granted.
-        }
-    }
-
     private fun queryFileName(uri: Uri): String? = try {
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -277,38 +238,11 @@ class MainActivity : AppCompatActivity() {
         null
     }
 
-    /**
-     * Writes the current data to [uri]. Returns true on success so the caller
-     * can decide whether a fallback (e.g. "Save As") is needed. [isOverwrite]
-     * only affects the confirmation message shown to the user.
-     */
-    private suspend fun saveExcel(uri: Uri, isOverwrite: Boolean): Boolean {
-        return try {
-            repository.exportToExcel(uri)
-            val message = if (isOverwrite) "הקובץ עודכן בהצלחה" else "הקובץ נשמר בהצלחה"
-            Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
-            true
-        } catch (e: Exception) {
-            if (!isOverwrite) {
-                showError("שגיאה בשמירת הקובץ", e.message ?: "שגיאה לא ידועה")
-            }
-            // When overwriting silently fails (permission lost, file moved/
-            // deleted), the caller falls back to "Save As" instead of erroring.
-            false
-        }
-    }
-
     private fun handleScannedBarcode(barcode: String) {
         lifecycleScope.launch {
             val product = repository.findByBarcode(barcode)
             if (product != null) {
-                openConfirmScreen(
-                    sku = product.sku,
-                    description = product.description,
-                    existingBarcode = product.barcode,
-                    scannedBarcode = barcode,
-                    existingLocation = product.location
-                )
+                openConfirmScreen(product, barcode)
             } else {
                 showBarcodeNotFound(barcode)
             }
@@ -327,20 +261,14 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun openConfirmScreen(
-        sku: String,
-        description: String,
-        existingBarcode: String,
-        scannedBarcode: String,
-        existingLocation: String
-    ) {
+    private fun openConfirmScreen(product: ProductLookup, scannedBarcode: String) {
         val currentLocation = prefs.currentLocation ?: return
         val intent = Intent(this, ProductConfirmActivity::class.java)
-            .putExtra(ProductConfirmActivity.EXTRA_SKU, sku)
-            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, description)
-            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, existingBarcode)
+            .putExtra(ProductConfirmActivity.EXTRA_SKU, product.sku)
+            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, product.description)
+            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, product.barcode)
             .putExtra(ProductConfirmActivity.EXTRA_SCANNED_BARCODE, scannedBarcode)
-            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATION, existingLocation)
+            .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList(product.existingLocations))
             .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, currentLocation)
         productConfirmLauncher.launch(intent)
     }

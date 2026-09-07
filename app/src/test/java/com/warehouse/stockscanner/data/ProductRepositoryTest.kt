@@ -6,16 +6,18 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 /**
- * Exercises the update-in-place contract from the spec directly against Room
- * (in-memory, via Robolectric — no emulator needed): confirming a scan must
- * never create a new row, must never touch the sku, and must only change the
- * fields the flow says it changes.
+ * Exercises the row-per-location contract from the spec directly against
+ * Room (in-memory, via Robolectric — no emulator needed): confirming a scan
+ * must never touch the sku, must fill in a still-blank location in place,
+ * and must open a brand-new row — never overwrite an existing one — the
+ * moment a product is confirmed at a genuinely new location.
  */
 @RunWith(RobolectricTestRunner::class)
 class ProductRepositoryTest {
@@ -38,7 +40,7 @@ class ProductRepositoryTest {
     }
 
     @Test
-    fun `updateProduct changes description, barcode and location without creating a new row`() = runBlocking {
+    fun `updateProduct fills in a still-blank location without creating a new row`() = runBlocking {
         db.productDao().insertAll(
             listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "7290012345678", "", 0))
         )
@@ -49,7 +51,7 @@ class ProductRepositoryTest {
         val updated = repository.findBySku("ABC-123")!!
         assertEquals("ABC-123", updated.sku) // sku itself never changes
         assertEquals("פילטר שמן טויוטה קורולה", updated.description)
-        assertEquals("A-01-05", updated.location)
+        assertEquals(listOf("A-01-05"), updated.existingLocations)
     }
 
     @Test
@@ -64,14 +66,15 @@ class ProductRepositoryTest {
 
         val updated = repository.findBySku("ABC-123")!!
         assertEquals("72900999", updated.barcode)
-        assertEquals("A-01-05", updated.location)
+        assertEquals(listOf("A-01-05"), updated.existingLocations)
 
-        // Now the same barcode is found directly by scanning again for a different
-        // location — barcode should stay the same, only location moves.
+        // Confirmed again at a second, different location: the barcode stays
+        // the same and BOTH locations are kept, not just the newest.
         repository.updateProduct("ABC-123", "מוצר קיים מעודכן", "72900999", "A-01-06")
         val movedAgain = repository.findBySku("ABC-123")!!
         assertEquals("72900999", movedAgain.barcode)
-        assertEquals("A-01-06", movedAgain.location)
+        assertEquals(setOf("A-01-05", "A-01-06"), movedAgain.existingLocations.toSet())
+        assertEquals(2, repository.count()) // a new row was opened, the old one kept
     }
 
     @Test
@@ -79,6 +82,37 @@ class ProductRepositoryTest {
         repository.updateProduct("DOES-NOT-EXIST", "x", "1", "A-01-01")
         assertEquals(0, repository.count())
         assertNull(repository.findBySku("DOES-NOT-EXIST"))
+    }
+
+    @Test
+    fun `confirming a product at a location it already has updates in place, no duplicate row`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "ישן", "111", "A-01-05", 0))
+        )
+
+        repository.updateProduct("ABC-123", "חדש", "111", "A-01-05")
+
+        assertEquals(1, repository.count())
+        val updated = repository.findBySku("ABC-123")!!
+        assertEquals("חדש", updated.description)
+        assertEquals(listOf("A-01-05"), updated.existingLocations)
+    }
+
+    @Test
+    fun `updateProduct keeps description and barcode in sync across every location row`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "ישן", "111", "A-01-05", 0),
+                ProductEntity("ABC-123", "ישן", "111", "B-02-01", 1)
+            )
+        )
+
+        repository.updateProduct("ABC-123", "חדש", "222", "C-03-01")
+
+        assertEquals(3, repository.count())
+        val rows = db.productDao().findAllBySku("ABC-123")
+        assertTrue(rows.all { it.description == "חדש" && it.barcode == "222" })
+        assertEquals(setOf("A-01-05", "B-02-01", "C-03-01"), rows.map { it.location }.toSet())
     }
 
     @Test
@@ -94,11 +128,12 @@ class ProductRepositoryTest {
     }
 
     @Test
-    fun `searchByDescription finds partial, case and whitespace insensitive matches`() = runBlocking {
+    fun `searchByDescription returns one result per product, not one per location row`() = runBlocking {
         db.productDao().insertAll(
             listOf(
-                ProductEntity("A", "פילטר שמן טויוטה", "", "", 0),
-                ProductEntity("B", "מצבר 12V", "", "", 1)
+                ProductEntity("A", "פילטר שמן טויוטה", "", "A-01-05", 0),
+                ProductEntity("A", "פילטר שמן טויוטה", "", "B-02-01", 1),
+                ProductEntity("B", "מצבר 12V", "", "", 2)
             )
         )
         val results = repository.searchByDescription("שמן")
@@ -107,29 +142,28 @@ class ProductRepositoryTest {
     }
 
     @Test
-    fun `a product confirmed at a second location keeps both, not just the newest`() = runBlocking {
+    fun `a product confirmed at a second location keeps both as separate rows`() = runBlocking {
         db.productDao().insertAll(
             listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "7290012345678", "A-01-05", 0))
         )
 
-        // Mirrors what ProductConfirmActivity does: read the existing location,
-        // add the newly scanned one, write the combined result back.
         val existing = repository.findBySku("ABC-123")!!
-        val combined = com.warehouse.stockscanner.util.LocationUtils.add(existing.location, "B-02-01")
-        repository.updateProduct("ABC-123", existing.description, existing.barcode, combined)
+        repository.updateProduct("ABC-123", existing.description, existing.barcode, "B-02-01")
 
         val updated = repository.findBySku("ABC-123")!!
-        assertEquals("A-01-05, B-02-01", updated.location)
+        assertEquals(setOf("A-01-05", "B-02-01"), updated.existingLocations.toSet())
+        assertEquals(2, repository.count())
     }
 
     @Test
-    fun `findByLocation matches products at that location among several, without false substring matches`() = runBlocking {
+    fun `findByLocation matches products at exactly that location, among several`() = runBlocking {
         db.productDao().insertAll(
             listOf(
                 ProductEntity("A", "in one place", "", "A-01-05", 0),
-                ProductEntity("B", "in two places", "", "A-01-05, B-02-01", 1),
-                ProductEntity("C", "elsewhere only", "", "A-01-10", 2),
-                ProductEntity("D", "no location yet", "", "", 3)
+                ProductEntity("B", "in two places", "", "A-01-05", 1),
+                ProductEntity("B", "in two places", "", "B-02-01", 2),
+                ProductEntity("C", "elsewhere only", "", "A-01-10", 3),
+                ProductEntity("D", "no location yet", "", "", 4)
             )
         )
 
@@ -139,8 +173,7 @@ class ProductRepositoryTest {
         val atB0201 = repository.findByLocation("B-02-01")
         assertEquals(listOf("B"), atB0201.map { it.sku })
 
-        // "A-01-05" must not falsely match "A-01-10" or "A-01-05, B-02-01" via
-        // a naive prefix/substring check on the raw column value.
+        // "A-01-05" must not falsely match "A-01-10" via a substring/prefix check.
         val atA011 = repository.findByLocation("A-01-1")
         assertEquals(emptyList<String>(), atA011.map { it.sku })
     }

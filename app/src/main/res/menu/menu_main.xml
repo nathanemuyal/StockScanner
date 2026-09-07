@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!--
+        Deliberately tucked into the overflow menu, not a main-screen button:
+        saving to Excel is a rare, intentional action the worker takes once
+        the whole process is done — not something that should be one tap
+        away during scanning, where it could be pressed by mistake.
+    -->
+    <item
+        android:id="@+id/action_save_excel"
+        android:title="💾 שמור Excel"
+        app:showAsAction="never" />
+
+</menu>

@@ -27,7 +27,7 @@ class ExcelReaderTest {
 
         // 4 real data rows + 1 fully-blank trailing row that must be skipped.
         assertEquals(4, result.products.size)
-        assertEquals(0, result.duplicateSkuRows)
+        assertEquals(0, result.duplicateRows)
         assertEquals(0, result.duplicateBarcodeRows)
 
         val bySku = result.products.associateBy { it.sku }
@@ -61,11 +61,11 @@ class ExcelReaderTest {
     }
 
     @Test
-    fun `duplicate skus are de-duplicated, last row wins, and the count is reported`() {
+    fun `duplicate sku+location rows are de-duplicated, last row wins, and the count is reported`() {
         val result = fixture("sample_duplicates.xlsx").use { ExcelReader.readProductsFromStream(it) }
 
         assertEquals(3, result.products.size) // SKU-1, SKU-2, SKU-3
-        assertEquals(1, result.duplicateSkuRows)
+        assertEquals(1, result.duplicateRows)
         assertEquals(1, result.duplicateBarcodeRows) // "2222" used by both SKU-2 and SKU-3
 
         val bySku = result.products.associateBy { it.sku }
@@ -83,13 +83,19 @@ class ExcelReaderTest {
     }
 
     @Test
-    fun `combines numbered location columns regardless of their physical order in the file`() {
+    fun `a legacy file with numbered location columns expands each value into its own row`() {
         // Fixture headers are: מקט, מיקום 3, תאור, ברקוד, מיקום, מיקום 2 — the
         // numbered columns are scattered and out of numeric order on purpose.
+        // Only kept for backward compatibility with files an older version of
+        // this app produced; the current writer never emits numbered columns.
         val result = fixture("sample_multi_location.xlsx").use { ExcelReader.readProductsFromStream(it) }
-        val bySku = result.products.associateBy { it.sku }
+        val byMulti1 = result.products.filter { it.sku == "MULTI-1" }
 
-        assertEquals("A-01-05, B-02-01, C-03-01", bySku.getValue("MULTI-1").location)
+        assertEquals(3, byMulti1.size)
+        assertEquals(setOf("A-01-05", "B-02-01", "C-03-01"), byMulti1.map { it.location }.toSet())
+        assertTrue(byMulti1.all { it.description == "מוצר בשלושה מקומות" && it.barcode == "111" })
+
+        val bySku = result.products.associateBy { it.sku }
         assertEquals("A-01-06", bySku.getValue("SINGLE-1").location)
         assertEquals("", bySku.getValue("NONE-1").location)
     }

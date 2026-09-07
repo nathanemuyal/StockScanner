@@ -9,7 +9,6 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.warehouse.stockscanner.data.ProductRepository
-import com.warehouse.stockscanner.util.LocationUtils
 import kotlinx.coroutines.launch
 
 /**
@@ -24,7 +23,7 @@ class ProductConfirmActivity : AppCompatActivity() {
         const val EXTRA_DESCRIPTION = "description"
         const val EXTRA_EXISTING_BARCODE = "existing_barcode"
         const val EXTRA_SCANNED_BARCODE = "scanned_barcode"
-        const val EXTRA_EXISTING_LOCATION = "existing_location"
+        const val EXTRA_EXISTING_LOCATIONS = "existing_locations"
         const val EXTRA_CURRENT_LOCATION = "current_location"
     }
 
@@ -39,7 +38,7 @@ class ProductConfirmActivity : AppCompatActivity() {
         val description = intent.getStringExtra(EXTRA_DESCRIPTION).orEmpty()
         val existingBarcode = intent.getStringExtra(EXTRA_EXISTING_BARCODE).orEmpty()
         val scannedBarcode = intent.getStringExtra(EXTRA_SCANNED_BARCODE).orEmpty()
-        val existingLocation = intent.getStringExtra(EXTRA_EXISTING_LOCATION).orEmpty()
+        val existingLocations = intent.getStringArrayListExtra(EXTRA_EXISTING_LOCATIONS).orEmpty()
         val currentLocation = intent.getStringExtra(EXTRA_CURRENT_LOCATION).orEmpty()
 
         val tvSku = findViewById<TextView>(R.id.tvSku)
@@ -51,18 +50,16 @@ class ProductConfirmActivity : AppCompatActivity() {
         val btnCancel = findViewById<Button>(R.id.btnCancel)
 
         // A product can sit in more than one location at once — a confirmed
-        // scan always ADDS the current location, it never replaces the
-        // product's existing ones.
-        val existingLocationsList = LocationUtils.parse(existingLocation)
-        val alreadyAtThisLocation = LocationUtils.contains(existingLocation, currentLocation)
-        val finalLocation = LocationUtils.add(existingLocation, currentLocation)
+        // scan always ADDS the current location as a new row alongside the
+        // product's existing ones, it never replaces or merges them.
+        val alreadyAtThisLocation = existingLocations.contains(currentLocation.trim())
 
         tvSku.text = sku
         etDescription.setText(description)
         tvBarcode.text = scannedBarcode
         tvBarcodeLabel.text =
             if (existingBarcode.isNotBlank() && existingBarcode != scannedBarcode) "ברקוד שנסרק:" else "ברקוד:"
-        tvLocation.text = finalLocation
+        tvLocation.text = currentLocation
 
         btnCancel.setOnClickListener {
             setResult(RESULT_CANCELED)
@@ -74,15 +71,15 @@ class ProductConfirmActivity : AppCompatActivity() {
             when {
                 sku.isBlank() -> Toast.makeText(this, "שגיאה: מקט חסר", Toast.LENGTH_SHORT).show()
                 newDescription.isBlank() -> Toast.makeText(this, "יש להזין תיאור", Toast.LENGTH_SHORT).show()
-                else -> saveAndFinish(sku, newDescription, scannedBarcode, finalLocation)
+                else -> saveAndFinish(sku, newDescription, scannedBarcode, currentLocation)
             }
         }
 
-        if (existingLocationsList.isNotEmpty() && !alreadyAtThisLocation) {
+        if (existingLocations.isNotEmpty() && !alreadyAtThisLocation) {
             AlertDialog.Builder(this)
                 .setTitle("⚠️ למוצר כבר יש מיקום קיים")
                 .setMessage(
-                    "מיקומים קיימים: ${LocationUtils.format(existingLocationsList)}\n" +
+                    "מיקומים קיימים: ${existingLocations.joinToString(", ")}\n" +
                         "מיקום נוסף: $currentLocation\n\n" +
                         "האם להוסיף את המיקום החדש למוצר?"
                 )
