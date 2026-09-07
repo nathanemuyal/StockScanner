@@ -1,10 +1,7 @@
 package com.warehouse.stockscanner
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
@@ -12,14 +9,12 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import com.warehouse.stockscanner.data.SessionPrefs
-import com.warehouse.stockscanner.excel.ExcelFormatException
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -27,11 +22,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var repository: ProductRepository
     private lateinit var prefs: SessionPrefs
 
+    private lateinit var btnExcelActions: Button
     private lateinit var tvFileName: TextView
     private lateinit var tvTotalProducts: TextView
     private lateinit var tvCurrentLocation: TextView
     private lateinit var tvApprovedCount: TextView
-    private lateinit var btnLoadExcel: Button
     private lateinit var btnScanLocation: Button
     private lateinit var btnScanProduct: Button
     private lateinit var btnFinishLocation: Button
@@ -41,11 +36,6 @@ class MainActivity : AppCompatActivity() {
 
     /** Barcode that was scanned but not found — kept around while the user searches by description. */
     private var pendingScannedBarcode: String? = null
-
-    private val openDocumentLauncher =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) loadExcel(uri)
-        }
 
     private val scanLocationLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -104,8 +94,7 @@ class MainActivity : AppCompatActivity() {
         repository = (application as StockScannerApp).repository
         prefs = SessionPrefs(this)
 
-        setSupportActionBar(findViewById<Toolbar>(R.id.toolbar))
-
+        btnExcelActions = findViewById(R.id.btnExcelActions)
         tvFileName = findViewById(R.id.tvFileName)
         tvTotalProducts = findViewById(R.id.tvTotalProducts)
         tvCurrentLocation = findViewById(R.id.tvCurrentLocation)
@@ -120,14 +109,11 @@ class MainActivity : AppCompatActivity() {
         recyclerScannedProducts.layoutManager = LinearLayoutManager(this)
         recyclerScannedProducts.adapter = scannedProductsAdapter
 
-        btnLoadExcel = findViewById(R.id.btnLoadExcel)
-        btnLoadExcel.setOnClickListener {
-            openDocumentLauncher.launch(
-                arrayOf(
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/octet-stream"
-                )
-            )
+        // Picking and saving the Excel file both live on their own dedicated
+        // screen — kept off the main scanning flow so neither can happen
+        // with a stray tap while scanning.
+        btnExcelActions.setOnClickListener {
+            startActivity(Intent(this, ExcelActionsActivity::class.java))
         }
 
         btnScanLocation.setOnClickListener {
@@ -157,95 +143,11 @@ class MainActivity : AppCompatActivity() {
         updateUiState()
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.menu_main, menu)
-        return true
-    }
-
-    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        // Saving to Excel is only offered once the worker has stepped away
-        // from an active location scan — never mid-location, where a save
-        // could too easily happen by mistake.
-        menu.findItem(R.id.action_save_excel)?.isVisible = prefs.currentLocation.isNullOrBlank()
-        return super.onPrepareOptionsMenu(menu)
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (item.itemId == R.id.action_save_excel) {
-            saveExcel()
-            return true
-        }
-        return super.onOptionsItemSelected(item)
-    }
-
-    /**
-     * Writes the current data to the working copy — a deliberate action the
-     * worker takes from the overflow menu, typically once at the end of the
-     * whole process. Never happens automatically after a scan.
-     */
-    private fun saveExcel() {
-        lifecycleScope.launch {
-            if (repository.count() == 0) {
-                Toast.makeText(this@MainActivity, "אין נתונים לשמירה, טען קובץ Excel קודם", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-            try {
-                repository.saveWorkingCopy()
-                Toast.makeText(this@MainActivity, "הקובץ נשמר בהצלחה", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                showError("שגיאה בשמירת הקובץ", e.message ?: "שגיאה לא ידועה")
-            }
-        }
-    }
-
     private fun launchScanProduct() {
         val intent = Intent(this, ScannerActivity::class.java)
             .putExtra(ScannerActivity.EXTRA_MODE, ScannerActivity.MODE_PRODUCT)
             .putExtra(ScannerActivity.EXTRA_CURRENT_LOCATION, prefs.currentLocation)
         scanProductLauncher.launch(intent)
-    }
-
-    private fun loadExcel(uri: Uri) {
-        lifecycleScope.launch {
-            try {
-                val result = repository.loadFromExcel(uri)
-                val name = queryFileName(uri) ?: "products.xlsx"
-
-                // The picked file itself is never opened for writing again —
-                // loadFromExcel already created a fresh working copy for it.
-                prefs.resetForNewFile(name, uri.toString())
-                updateUiState()
-
-                if (result.duplicateRows > 0 || result.duplicateBarcodeRows > 0) {
-                    val warnings = ArrayList<String>()
-                    if (result.duplicateRows > 0) {
-                        warnings.add("${result.duplicateRows} שורות כפולות (אותו מקט ואותו מיקום — נלקחה השורה האחרונה)")
-                    }
-                    if (result.duplicateBarcodeRows > 0) {
-                        warnings.add("${result.duplicateBarcodeRows} שורות עם ברקוד כפול (בסריקה ייבחר מוצר אחד מביניהם)")
-                    }
-                    showError(
-                        "נטענו ${result.products.size} מוצרים — לתשומת לבכם",
-                        warnings.joinToString("\n")
-                    )
-                } else {
-                    Toast.makeText(this@MainActivity, "נטענו ${result.products.size} מוצרים", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: ExcelFormatException) {
-                showError("שגיאה בטעינת הקובץ", e.message ?: "שגיאה לא ידועה")
-            } catch (e: Exception) {
-                showError("שגיאה בטעינת הקובץ", e.message ?: "שגיאה לא ידועה")
-            }
-        }
-    }
-
-    private fun queryFileName(uri: Uri): String? = try {
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
-        }
-    } catch (e: Exception) {
-        null
     }
 
     private fun handleScannedBarcode(barcode: String) {
@@ -283,14 +185,6 @@ class MainActivity : AppCompatActivity() {
         productConfirmLauncher.launch(intent)
     }
 
-    private fun showError(title: String, message: String) {
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setMessage(message)
-            .setPositiveButton("אישור", null)
-            .show()
-    }
-
     private fun updateUiState() {
         lifecycleScope.launch {
             val total = repository.count()
@@ -299,10 +193,10 @@ class MainActivity : AppCompatActivity() {
             tvApprovedCount.text = "מוצרים שאושרו: ${prefs.approvedCount}"
 
             val location = prefs.currentLocation
-            // Loading a new file (and saving the current one — see
-            // onPrepareOptionsMenu) is only offered when no location scan is
-            // in progress, so neither can happen by mistake mid-location.
-            btnLoadExcel.visibility = if (location.isNullOrBlank()) View.VISIBLE else View.GONE
+            // Excel actions (choosing/saving a file) are only offered when no
+            // location scan is in progress, so neither can happen by mistake
+            // mid-location.
+            btnExcelActions.visibility = if (location.isNullOrBlank()) View.VISIBLE else View.GONE
             if (location.isNullOrBlank()) {
                 tvCurrentLocation.text = "📍 אין מיקום פעיל"
                 btnScanLocation.visibility = View.VISIBLE
@@ -328,7 +222,6 @@ class MainActivity : AppCompatActivity() {
                     scannedProductsAdapter.submitList(productsHere)
                 }
             }
-            invalidateOptionsMenu()
         }
     }
 }
