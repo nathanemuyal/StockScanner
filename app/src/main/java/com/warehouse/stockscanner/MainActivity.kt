@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTotalProducts: TextView
     private lateinit var tvCurrentLocation: TextView
     private lateinit var tvApprovedCount: TextView
+    private lateinit var btnLoadExcel: Button
     private lateinit var btnScanLocation: Button
     private lateinit var btnScanProduct: Button
     private lateinit var btnFinishLocation: Button
@@ -119,7 +120,8 @@ class MainActivity : AppCompatActivity() {
         recyclerScannedProducts.layoutManager = LinearLayoutManager(this)
         recyclerScannedProducts.adapter = scannedProductsAdapter
 
-        findViewById<Button>(R.id.btnLoadExcel).setOnClickListener {
+        btnLoadExcel = findViewById(R.id.btnLoadExcel)
+        btnLoadExcel.setOnClickListener {
             openDocumentLauncher.launch(
                 arrayOf(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -158,6 +160,14 @@ class MainActivity : AppCompatActivity() {
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
         return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        // Saving to Excel is only offered once the worker has stepped away
+        // from an active location scan — never mid-location, where a save
+        // could too easily happen by mistake.
+        menu.findItem(R.id.action_save_excel)?.isVisible = prefs.currentLocation.isNullOrBlank()
+        return super.onPrepareOptionsMenu(menu)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -289,6 +299,10 @@ class MainActivity : AppCompatActivity() {
             tvApprovedCount.text = "מוצרים שאושרו: ${prefs.approvedCount}"
 
             val location = prefs.currentLocation
+            // Loading a new file (and saving the current one — see
+            // onPrepareOptionsMenu) is only offered when no location scan is
+            // in progress, so neither can happen by mistake mid-location.
+            btnLoadExcel.visibility = if (location.isNullOrBlank()) View.VISIBLE else View.GONE
             if (location.isNullOrBlank()) {
                 tvCurrentLocation.text = "📍 אין מיקום פעיל"
                 btnScanLocation.visibility = View.VISIBLE
@@ -314,6 +328,7 @@ class MainActivity : AppCompatActivity() {
                     scannedProductsAdapter.submitList(productsHere)
                 }
             }
+            invalidateOptionsMenu()
         }
     }
 }
