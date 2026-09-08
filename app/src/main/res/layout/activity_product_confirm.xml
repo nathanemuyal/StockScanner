@@ -75,6 +75,15 @@
             android:textSize="18sp" />
 
         <Button
+            android:id="@+id/btnChangeSku"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
+            android:text="🔄 מקט שגוי? החלף מוצר"
+            android:textSize="16sp" />
+
+        <Button
             android:id="@+id/btnCancel"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="match_parent"
