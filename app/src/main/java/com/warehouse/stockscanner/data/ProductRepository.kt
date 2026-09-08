@@ -21,7 +21,11 @@ data class ProductLookup(
     val existingLocations: List<String>
 )
 
-class ProductRepository(private val context: Context, private val dao: ProductDao) {
+class ProductRepository(
+    private val context: Context,
+    private val dao: ProductDao,
+    private val aliasDao: BarcodeAliasDao
+) {
 
     /**
      * The Excel file this app actually writes to. The file the user
@@ -40,15 +44,23 @@ class ProductRepository(private val context: Context, private val dao: ProductDa
         val result = ExcelReader.readProducts(context, uri)
         dao.clearAll()
         dao.insertAll(result.products)
+        aliasDao.clearAll()
+        aliasDao.insertAll(result.barcodeAliases)
         writeWorkingCopy()
         return result
     }
 
+    /**
+     * Resolves [barcode] to its product, checking the product's own (primary)
+     * ברקוד first and, if nothing matches there, the extra barcodes aliased
+     * to a sku via [BarcodeAliasEntity] — several different physical codes
+     * can point at the very same product.
+     */
     suspend fun findByBarcode(barcode: String): ProductLookup? {
         val trimmed = barcode.trim()
         if (trimmed.isEmpty()) return null
-        val row = dao.findByBarcode(trimmed) ?: return null
-        return lookupFor(row.sku)
+        val sku = dao.findByBarcode(trimmed)?.sku ?: aliasDao.findSkuByBarcode(trimmed) ?: return null
+        return lookupFor(sku)
     }
 
     suspend fun findBySku(sku: String): ProductLookup? = lookupFor(sku)
@@ -71,32 +83,55 @@ class ProductRepository(private val context: Context, private val dao: ProductDa
     }
 
     /**
-     * Applies a confirmed scan. The product's description/barcode are kept
-     * in sync across every location it already has — it's the same product
-     * wherever it sits. The location itself is only ever ADDED to: if [sku]
-     * already has a row at [newLocation], that row is refreshed in place;
-     * otherwise a brand-new row is opened for it (cloned from an existing
-     * row), so a product can sit in more than one location at once without
-     * ever losing an older one. Never creates a row for an unknown sku.
+     * Applies a confirmed scan. The product's description is kept in sync
+     * across every location it already has — it's the same product wherever
+     * it sits. The barcode, however, is only ever ADDED to, never
+     * overwritten: a still-blank primary ברקוד gets set from [newBarcode],
+     * but once a sku already has one, a *different* [newBarcode] (e.g. the
+     * product was found via description search after an unrecognized scan)
+     * is recorded as an extra alias for [sku] instead of replacing it — so
+     * either barcode keeps resolving to the same product afterwards. The
+     * location itself is also only ever ADDED to: if [sku] already has a row
+     * at [newLocation], that row is refreshed in place; otherwise a
+     * brand-new row is opened for it (cloned from an existing row), so a
+     * product can sit in more than one location at once without ever losing
+     * an older one. Never creates a row for an unknown sku.
      */
     suspend fun updateProduct(sku: String, newDescription: String, newBarcode: String, newLocation: String) {
         val existingRows = dao.findAllBySku(sku)
         if (existingRows.isEmpty()) return
         val trimmedLocation = newLocation.trim()
+        val trimmedBarcode = newBarcode.trim()
 
         for (row in existingRows) {
-            if (row.description != newDescription || row.barcode != newBarcode) {
-                dao.update(row.copy(description = newDescription, barcode = newBarcode))
+            if (row.description != newDescription) {
+                dao.update(row.copy(description = newDescription))
+            }
+        }
+
+        if (trimmedBarcode.isNotEmpty()) {
+            val currentPrimary = existingRows.first().barcode
+            if (currentPrimary.isBlank()) {
+                // No primary ברקוד yet for this sku — this is the first one, so
+                // it becomes the primary on every row, same as before.
+                for (row in existingRows) {
+                    if (row.barcode != trimmedBarcode) dao.update(row.copy(barcode = trimmedBarcode))
+                }
+            } else if (currentPrimary != trimmedBarcode) {
+                aliasDao.insert(BarcodeAliasEntity(barcode = trimmedBarcode, sku = sku))
             }
         }
 
         if (existingRows.any { it.location == trimmedLocation }) return
 
         // A single row that has no location yet just gets this one filled
-        // in, instead of being left behind as an orphaned blank row.
+        // in, instead of being left behind as an orphaned blank row. The
+        // primary barcode (not necessarily newBarcode — see above) is what
+        // every row for this sku carries, this one included.
+        val primaryBarcode = existingRows.first().barcode.let { if (it.isBlank()) trimmedBarcode else it }
         val blankRow = existingRows.singleOrNull { it.location.isBlank() }
         if (blankRow != null) {
-            dao.update(blankRow.copy(description = newDescription, barcode = newBarcode, location = trimmedLocation))
+            dao.update(blankRow.copy(description = newDescription, barcode = primaryBarcode, location = trimmedLocation))
             return
         }
 
@@ -106,7 +141,7 @@ class ProductRepository(private val context: Context, private val dao: ProductDa
             template.copy(
                 id = 0,
                 description = newDescription,
-                barcode = newBarcode,
+                barcode = primaryBarcode,
                 location = trimmedLocation,
                 rowOrder = nextOrder
             )
@@ -163,6 +198,7 @@ class ProductRepository(private val context: Context, private val dao: ProductDa
 
     private suspend fun writeWorkingCopy() {
         val all = dao.getAllOrdered()
-        FileOutputStream(workingFile).use { ExcelWriter.writeProductsToStream(it, all) }
+        val aliases = aliasDao.getAll()
+        FileOutputStream(workingFile).use { ExcelWriter.writeProductsToStream(it, all, aliases) }
     }
 }

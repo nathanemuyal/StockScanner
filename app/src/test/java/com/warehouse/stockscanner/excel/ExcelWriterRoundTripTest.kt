@@ -1,5 +1,6 @@
 package com.warehouse.stockscanner.excel
 
+import com.warehouse.stockscanner.data.BarcodeAliasEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -129,5 +130,33 @@ class ExcelWriterRoundTripTest {
 
         val bySku = result.products.associateBy { it.sku }
         assertEquals("A-01-06", bySku.getValue("SINGLE-1").location)
+    }
+
+    @Test
+    fun `barcode aliases round-trip through their own sheet, separate from the product rows`() {
+        val products = listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        val aliases = listOf(
+            BarcodeAliasEntity(barcode = "222", sku = "ABC-123"),
+            BarcodeAliasEntity(barcode = "333", sku = "ABC-123")
+        )
+        val bytes = ByteArrayOutputStream().also {
+            ExcelWriter.writeProductsToStream(it, products, aliases)
+        }.toByteArray()
+
+        val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
+        assertEquals(1, result.products.size) // aliases never turn into extra product rows
+        assertEquals(setOf("222", "333"), result.barcodeAliases.map { it.barcode }.toSet())
+        assertTrue(result.barcodeAliases.all { it.sku == "ABC-123" })
+    }
+
+    @Test
+    fun `writing with no aliases still produces a readable file with no aliases on reload`() {
+        val products = listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        val bytes = ByteArrayOutputStream().also {
+            ExcelWriter.writeProductsToStream(it, products)
+        }.toByteArray()
+
+        val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
+        assertTrue(result.barcodeAliases.isEmpty())
     }
 }

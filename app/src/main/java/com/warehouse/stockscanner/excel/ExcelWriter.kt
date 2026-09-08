@@ -1,5 +1,6 @@
 package com.warehouse.stockscanner.excel
 
+import com.warehouse.stockscanner.data.BarcodeAliasEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import java.io.BufferedOutputStream
 import java.io.OutputStream
@@ -24,11 +25,22 @@ object ExcelWriter {
     private const val COL_PACKAGE_COUNT = "כמות אריזות"
     private const val COL_QUANTITY = "כמות יחידות"
 
+    private const val COL_ALIAS_BARCODE = "ברקוד"
+    private const val COL_ALIAS_SKU = "מקט"
+
     /**
      * Core writing logic, decoupled from Context/Uri so it can also be driven
-     * directly against a plain OutputStream (e.g. in tests).
+     * directly against a plain OutputStream (e.g. in tests). [aliases] are
+     * extra barcodes attached to a sku that already has its own (primary)
+     * ברקוד — written as a second worksheet ("ברקודים כפולים") rather than
+     * extra columns on the product rows, since an alias isn't tied to any
+     * one location.
      */
-    fun writeProductsToStream(output: OutputStream, products: List<ProductEntity>) {
+    fun writeProductsToStream(
+        output: OutputStream,
+        products: List<ProductEntity>,
+        aliases: List<BarcodeAliasEntity> = emptyList()
+    ) {
         val ordered = products.sortedBy { it.rowOrder }
 
         BufferedOutputStream(output).use { buffered ->
@@ -39,6 +51,7 @@ object ExcelWriter {
                 writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml())
                 writeEntry(zip, "xl/styles.xml", stylesXml())
                 writeEntry(zip, "xl/worksheets/sheet1.xml", sheetXml(ordered))
+                writeEntry(zip, "xl/worksheets/sheet2.xml", aliasSheetXml(aliases))
             }
         }
     }
@@ -121,6 +134,38 @@ object ExcelWriter {
         return sb.toString()
     }
 
+    /** "ברקודים כפולים": one row per extra barcode aliased to a sku that already has its own. */
+    private fun aliasSheetXml(aliases: List<BarcodeAliasEntity>): String {
+        val headers = listOf(COL_ALIAS_BARCODE, COL_ALIAS_SKU)
+
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+        sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
+        val lastRow = aliases.size + 1
+        val lastColLetter = ExcelColumns.indexToLetter(headers.size - 1)
+        sb.append("<dimension ref=\"A1:$lastColLetter$lastRow\"/>")
+        sb.append("<sheetData>")
+
+        sb.append("<row r=\"1\">")
+        headers.forEachIndexed { index, header ->
+            sb.append(cell(ExcelColumns.indexToLetter(index), 1, header))
+        }
+        sb.append("</row>")
+
+        var rowNum = 2
+        for (alias in aliases) {
+            sb.append("<row r=\"$rowNum\">")
+            sb.append(cell("A", rowNum, alias.barcode))
+            sb.append(cell("B", rowNum, alias.sku))
+            sb.append("</row>")
+            rowNum++
+        }
+
+        sb.append("</sheetData>")
+        sb.append("</worksheet>")
+        return sb.toString()
+    }
+
     private fun contentTypesXml(): String = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -129,6 +174,7 @@ object ExcelWriter {
         <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
         <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
         <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+        <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
         </Types>
     """.trimIndent()
 
@@ -144,6 +190,7 @@ object ExcelWriter {
         <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
         <sheets>
         <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+        <sheet name="ברקודים כפולים" sheetId="2" r:id="rId3"/>
         </sheets>
         </workbook>
     """.trimIndent()
@@ -153,6 +200,7 @@ object ExcelWriter {
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
         <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
         <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+        <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
         </Relationships>
     """.trimIndent()
 

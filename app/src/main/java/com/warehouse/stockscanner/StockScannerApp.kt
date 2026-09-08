@@ -12,6 +12,6 @@ class StockScannerApp : Application() {
     override fun onCreate() {
         super.onCreate()
         val db = AppDatabase.getInstance(this)
-        repository = ProductRepository(this, db.productDao())
+        repository = ProductRepository(this, db.productDao(), db.barcodeAliasDao())
     }
 }
