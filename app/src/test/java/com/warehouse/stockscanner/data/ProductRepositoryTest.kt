@@ -39,13 +39,13 @@ class ProductRepositoryTest {
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        repository = ProductRepository(context, db.productDao())
+        repository = ProductRepository(context, db.productDao(), db.barcodeAliasDao())
     }
 
-    /** Writes [products] as a real .xlsx to a temp file and returns a Uri to it, as if picked via SAF. */
-    private fun writeSourceFile(products: List<ProductEntity>): Uri {
+    /** Writes [products] (and optionally [aliases]) as a real .xlsx to a temp file, returning a Uri as if picked via SAF. */
+    private fun writeSourceFile(products: List<ProductEntity>, aliases: List<BarcodeAliasEntity> = emptyList()): Uri {
         val file = File.createTempFile("source", ".xlsx", context.cacheDir)
-        FileOutputStream(file).use { ExcelWriter.writeProductsToStream(it, products) }
+        FileOutputStream(file).use { ExcelWriter.writeProductsToStream(it, products, aliases) }
         return Uri.fromFile(file)
     }
 
@@ -116,7 +116,7 @@ class ProductRepositoryTest {
     }
 
     @Test
-    fun `updateProduct keeps description and barcode in sync across every location row`() = runBlocking {
+    fun `updateProduct syncs description across every location row but never overwrites an existing primary barcode`() = runBlocking {
         db.productDao().insertAll(
             listOf(
                 ProductEntity("ABC-123", "ישן", "111", "A-01-05", 0),
@@ -124,12 +124,76 @@ class ProductRepositoryTest {
             )
         )
 
+        // A different barcode than the sku's existing one — e.g. the product
+        // was found via description search after an unrecognized scan.
         repository.updateProduct("ABC-123", "חדש", "222", "C-03-01")
 
         assertEquals(3, repository.count())
         val rows = db.productDao().findAllBySku("ABC-123")
-        assertTrue(rows.all { it.description == "חדש" && it.barcode == "222" })
+        assertTrue(rows.all { it.description == "חדש" })
+        assertTrue("the original primary barcode must survive untouched", rows.all { it.barcode == "111" })
         assertEquals(setOf("A-01-05", "B-02-01", "C-03-01"), rows.map { it.location }.toSet())
+    }
+
+    @Test
+    fun `a barcode scanned for a sku that already has one is saved as an alias, not a replacement`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "פילטר שמן", "111", "A-01-05", 0))
+        )
+
+        repository.updateProduct("ABC-123", "פילטר שמן", "222", "A-01-05")
+
+        // Both the original and the new barcode now resolve to the same product.
+        assertEquals("ABC-123", repository.findByBarcode("111")!!.sku)
+        val viaAlias = repository.findByBarcode("222")!!
+        assertEquals("ABC-123", viaAlias.sku)
+        assertEquals("פילטר שמן", viaAlias.description)
+
+        // The row itself still only carries the original primary barcode.
+        assertEquals("111", db.productDao().findAllBySku("ABC-123").single().barcode)
+    }
+
+    @Test
+    fun `confirming the same alias barcode again does not duplicate it or error`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "222", "A-01-05")
+        repository.updateProduct("ABC-123", "מוצר", "222", "A-01-05")
+
+        assertEquals("ABC-123", repository.findByBarcode("222")!!.sku)
+    }
+
+    @Test
+    fun `a barcode already aliased to one sku is never stolen by another`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר א", "111", "A-01-05", 0),
+                ProductEntity("XYZ-999", "מוצר ב", "333", "B-02-01", 1)
+            )
+        )
+        repository.updateProduct("ABC-123", "מוצר א", "222", "A-01-05")
+
+        // A later attempt to alias the same barcode to a different sku is a no-op.
+        repository.updateProduct("XYZ-999", "מוצר ב", "222", "B-02-01")
+
+        assertEquals("ABC-123", repository.findByBarcode("222")!!.sku)
+    }
+
+    @Test
+    fun `first-time barcode for a sku that had none yet still becomes the primary, across every row`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "", "A-01-05", 0),
+                ProductEntity("ABC-123", "מוצר", "", "B-02-01", 1)
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "C-03-01")
+
+        val rows = db.productDao().findAllBySku("ABC-123")
+        assertTrue(rows.all { it.barcode == "111" })
     }
 
     @Test
@@ -295,6 +359,31 @@ class ProductRepositoryTest {
         assertEquals(60, row.quantity)
         assertEquals(ProductEntity.TYPE_PACKAGE, row.quantityType)
         assertNull(repository.findRow("ABC-123", "NOWHERE"))
+    }
+
+    @Test
+    fun `loadFromExcel also loads barcode aliases from the ברקודים כפולים sheet`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
+            listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123"))
+        )
+
+        repository.loadFromExcel(sourceUri)
+
+        val viaAlias = repository.findByBarcode("222")!!
+        assertEquals("ABC-123", viaAlias.sku)
+    }
+
+    @Test
+    fun `saveWorkingCopy persists barcode aliases so they survive a reload`() = runBlocking {
+        val sourceUri = writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)))
+        repository.loadFromExcel(sourceUri)
+
+        repository.updateProduct("ABC-123", "מוצר", "222", "A-01-05")
+        repository.saveWorkingCopy()
+
+        val reloaded = workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }
+        assertEquals(listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123")), reloaded.barcodeAliases)
     }
 
     @Test

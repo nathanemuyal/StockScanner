@@ -85,6 +85,12 @@ class ExcelReaderTest {
     }
 
     @Test
+    fun `a single-sheet source file from elsewhere has no barcode aliases, not a crash`() {
+        val result = fixture("sample_normal.xlsx").use { ExcelReader.readProductsFromStream(it) }
+        assertTrue(result.barcodeAliases.isEmpty())
+    }
+
+    @Test
     fun `missing required column raises a clear, specific error`() {
         try {
             fixture("sample_missing_column.xlsx").use { ExcelReader.readProductsFromStream(it) }
