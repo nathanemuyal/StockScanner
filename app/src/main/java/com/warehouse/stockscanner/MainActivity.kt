@@ -106,9 +106,13 @@ class MainActivity : AppCompatActivity() {
         tvScannedProductsLabel = findViewById(R.id.tvScannedProductsLabel)
         recyclerScannedProducts = findViewById(R.id.recyclerScannedProducts)
 
-        // Tapping a product already on this shelf offers to undo that — e.g.
-        // it was scanned by mistake, or has actually been pulled off the shelf.
-        scannedProductsAdapter = SearchResultAdapter { product -> confirmRemoveFromLocation(product) }
+        // The row itself stays view-only (tapping it does nothing) — only its
+        // red "−" button offers to undo the product having been added to this
+        // shelf, e.g. because it was scanned by mistake or actually pulled off.
+        scannedProductsAdapter = SearchResultAdapter(
+            onClick = { /* view-only row, removal is via the "−" button only */ },
+            onRemoveClick = { product -> confirmRemoveFromLocation(product) }
+        )
         recyclerScannedProducts.layoutManager = LinearLayoutManager(this)
         recyclerScannedProducts.adapter = scannedProductsAdapter
 

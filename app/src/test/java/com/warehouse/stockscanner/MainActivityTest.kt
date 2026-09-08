@@ -124,7 +124,8 @@ class MainActivityTest {
         val recycler = activity.findViewById<RecyclerView>(R.id.recyclerScannedProducts)
         awaitUntil { recycler.adapter?.itemCount == 1 }
 
-        recycler.findViewHolderForAdapterPosition(0)!!.itemView.performClick()
+        recycler.findViewHolderForAdapterPosition(0)!!.itemView
+            .findViewById<View>(R.id.btnRemoveFromLocation).performClick()
 
         awaitUntil { ShadowDialog.getLatestDialog() != null }
         val dialog = ShadowDialog.getLatestDialog() as AlertDialog
@@ -151,7 +152,8 @@ class MainActivityTest {
         val recycler = activity.findViewById<RecyclerView>(R.id.recyclerScannedProducts)
         awaitUntil { recycler.adapter?.itemCount == 1 }
 
-        recycler.findViewHolderForAdapterPosition(0)!!.itemView.performClick()
+        recycler.findViewHolderForAdapterPosition(0)!!.itemView
+            .findViewById<View>(R.id.btnRemoveFromLocation).performClick()
 
         awaitUntil { ShadowDialog.getLatestDialog() != null }
         val dialog = ShadowDialog.getLatestDialog() as AlertDialog
@@ -163,5 +165,33 @@ class MainActivityTest {
             AppDatabase.getInstance(context).productDao().findAllBySku("ABC-123")
         }.single()
         assertEquals("A-01-05", untouched.location)
+    }
+
+    @Test
+    fun `tapping the row itself, not the remove button, does nothing`() {
+        val context = ApplicationProvider.getApplicationContext<StockScannerApp>()
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+            )
+        }
+        SessionPrefs(context).currentLocation = "A-01-05"
+
+        val activity = Robolectric.buildActivity(MainActivity::class.java).setup().get()
+        val recycler = activity.findViewById<RecyclerView>(R.id.recyclerScannedProducts)
+        awaitUntil { recycler.adapter?.itemCount == 1 }
+
+        val itemView = recycler.findViewHolderForAdapterPosition(0)!!.itemView
+        assertEquals(
+            "the remove button must be visible on the shelf list",
+            View.VISIBLE,
+            itemView.findViewById<View>(R.id.btnRemoveFromLocation).visibility
+        )
+
+        itemView.performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertNull("a plain row tap must not open the removal dialog", ShadowDialog.getLatestDialog())
+        assertEquals(1, recycler.adapter?.itemCount)
     }
 }
