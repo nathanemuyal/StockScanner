@@ -213,6 +213,35 @@ class ProductRepository(
         )
     }
 
+    /**
+     * Undoes a product having been added to [location] — the counterpart to
+     * the ADD-only location handling in [updateProduct]. If [sku] has other
+     * location rows too, the row for [location] is simply deleted. If this
+     * is its only row, the row is kept but cleared back to a blank location
+     * (mirroring the blank row an import leaves for a not-yet-placed
+     * product), so the sku/description/barcode aren't lost along with the
+     * shelf assignment. A no-op if [sku] has no row at [location].
+     */
+    suspend fun removeFromLocation(sku: String, location: String) {
+        val trimmedLocation = location.trim()
+        val row = dao.findBySkuAndLocation(sku, trimmedLocation) ?: return
+
+        val otherRows = dao.findAllBySku(sku).any { it.id != row.id }
+        if (otherRows) {
+            dao.delete(row)
+        } else {
+            dao.update(
+                row.copy(
+                    location = "",
+                    quantityType = ProductEntity.TYPE_UNITS,
+                    packageContent = 0,
+                    packageCount = 0,
+                    quantity = 0
+                )
+            )
+        }
+    }
+
     suspend fun count(): Int = dao.count()
 
     /** Every product row currently assigned to exactly [location] — what's on that shelf right now. */
