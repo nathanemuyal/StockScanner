@@ -387,6 +387,80 @@ class ProductRepositoryTest {
     }
 
     @Test
+    fun `reassignBarcode moves a primary barcode from the wrong sku to the right one`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("WRONG-1", "מוצר שגוי", "111", "A-01-05", 0),
+                ProductEntity("RIGHT-1", "מוצר נכון", "", "B-02-01", 1)
+            )
+        )
+
+        repository.reassignBarcode("111", "RIGHT-1")
+
+        assertEquals("RIGHT-1", repository.findByBarcode("111")!!.sku)
+        // The old owner no longer carries the misassigned barcode.
+        assertEquals("", db.productDao().findAllBySku("WRONG-1").single().barcode)
+        assertEquals("111", db.productDao().findAllBySku("RIGHT-1").single().barcode)
+    }
+
+    @Test
+    fun `reassignBarcode attaches as an alias when the new sku already has a primary barcode`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("WRONG-1", "מוצר שגוי", "111", "A-01-05", 0),
+                ProductEntity("RIGHT-1", "מוצר נכון", "999", "B-02-01", 1)
+            )
+        )
+
+        repository.reassignBarcode("111", "RIGHT-1")
+
+        assertEquals("RIGHT-1", repository.findByBarcode("111")!!.sku)
+        assertEquals("999", db.productDao().findAllBySku("RIGHT-1").single().barcode) // primary untouched
+        assertEquals("", db.productDao().findAllBySku("WRONG-1").single().barcode)
+    }
+
+    @Test
+    fun `reassignBarcode moves an aliased barcode to the correct sku instead of the mistaken one`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("WRONG-1", "מוצר שגוי", "111", "A-01-05", 0),
+                ProductEntity("RIGHT-1", "מוצר נכון", "", "B-02-01", 1)
+            )
+        )
+        // "222" was mistakenly learned as an alias of WRONG-1.
+        repository.updateProduct("WRONG-1", "מוצר שגוי", "222", "A-01-05")
+        assertEquals("WRONG-1", repository.findByBarcode("222")!!.sku)
+
+        repository.reassignBarcode("222", "RIGHT-1")
+
+        assertEquals("RIGHT-1", repository.findByBarcode("222")!!.sku)
+        // WRONG-1's own primary barcode is unaffected — only the alias moved.
+        assertEquals("111", db.productDao().findAllBySku("WRONG-1").single().barcode)
+    }
+
+    @Test
+    fun `reassignBarcode to an unknown sku is a no-op, keeping the existing link intact`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+
+        repository.reassignBarcode("111", "DOES-NOT-EXIST")
+
+        assertEquals("ABC-123", repository.findByBarcode("111")!!.sku)
+    }
+
+    @Test
+    fun `reassignBarcode for a barcode with no existing link simply attaches it fresh`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "", "A-01-05", 0))
+        )
+
+        repository.reassignBarcode("555", "ABC-123")
+
+        assertEquals("ABC-123", repository.findByBarcode("555")!!.sku)
+    }
+
+    @Test
     fun `loading a different source file replaces the working copy, not merges with it`() = runBlocking {
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("OLD", "old product", "", "A-01-01", 0))))
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("NEW", "new product", "", "A-01-02", 0))))

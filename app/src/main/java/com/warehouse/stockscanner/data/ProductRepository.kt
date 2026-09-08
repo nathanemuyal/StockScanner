@@ -148,6 +148,42 @@ class ProductRepository(
         )
     }
 
+    /**
+     * Fixes a mistaken barcode-to-מקט link: [barcode] is detached from
+     * whatever product it currently resolves to (as either a primary ברקוד
+     * or an alias — see [BarcodeAliasEntity]) and reattached to [newSku]
+     * instead, the same way a fresh scan would attach it (primary if [newSku]
+     * has none yet, otherwise an alias). Used from the confirm screen when
+     * the user notices a scan matched the wrong product and picks the right
+     * one. A no-op if [newSku] has no rows to attach to.
+     */
+    suspend fun reassignBarcode(barcode: String, newSku: String) {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty()) return
+
+        // Checked before anything is detached below, so an unknown newSku
+        // leaves the barcode's existing link untouched instead of orphaning it.
+        val newRows = dao.findAllBySku(newSku)
+        if (newRows.isEmpty()) return
+
+        val currentOwner = dao.findByBarcode(trimmed)
+        if (currentOwner != null && currentOwner.sku != newSku) {
+            for (row in dao.findAllBySku(currentOwner.sku)) {
+                if (row.barcode == trimmed) dao.update(row.copy(barcode = ""))
+            }
+        }
+        aliasDao.deleteByBarcode(trimmed)
+
+        val newPrimary = newRows.first().barcode
+        if (newPrimary.isBlank()) {
+            for (row in newRows) {
+                if (row.barcode != trimmed) dao.update(row.copy(barcode = trimmed))
+            }
+        } else if (newPrimary != trimmed) {
+            aliasDao.insert(BarcodeAliasEntity(barcode = trimmed, sku = newSku))
+        }
+    }
+
     /** The exact row for [sku] at [location] — used by the inventory screen to prefill an existing quantity. */
     suspend fun findRow(sku: String, location: String): ProductEntity? =
         dao.findBySkuAndLocation(sku, location.trim())

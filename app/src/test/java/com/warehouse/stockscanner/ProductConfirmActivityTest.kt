@@ -81,4 +81,42 @@ class ProductConfirmActivityTest {
         assertEquals("מוצר חדש", updated.description)
         assertEquals("A-01-05", updated.location)
     }
+
+    @Test
+    fun `change-sku button opens the search screen, to fix a barcode matched to the wrong מקט`() {
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("WRONG-1", "מוצר שגוי", "111", "", 0))
+            )
+        }
+
+        val intent = Intent(context, ProductConfirmActivity::class.java)
+            .putExtra(ProductConfirmActivity.EXTRA_SKU, "WRONG-1")
+            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, "מוצר שגוי")
+            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, "111")
+            .putExtra(ProductConfirmActivity.EXTRA_SCANNED_BARCODE, "111")
+            .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList())
+            .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, "A-01-05")
+
+        val activity = Robolectric.buildActivity(ProductConfirmActivity::class.java, intent).setup().get()
+        activity.findViewById<Button>(R.id.btnChangeSku).performClick()
+
+        val started = shadowOf(activity).nextStartedActivityForResult
+        assertEquals(SearchActivity::class.java.name, started.intent.component?.className)
+    }
+
+    @Test
+    fun `change-sku button is hidden when there is no scanned barcode to reassign`() {
+        val intent = Intent(context, ProductConfirmActivity::class.java)
+            .putExtra(ProductConfirmActivity.EXTRA_SKU, "ABC-123")
+            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, "מוצר")
+            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, "")
+            .putExtra(ProductConfirmActivity.EXTRA_SCANNED_BARCODE, "")
+            .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList())
+            .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, "A-01-05")
+
+        val activity = Robolectric.buildActivity(ProductConfirmActivity::class.java, intent).setup().get()
+
+        assertEquals(android.view.View.GONE, activity.findViewById<Button>(R.id.btnChangeSku).visibility)
+    }
 }

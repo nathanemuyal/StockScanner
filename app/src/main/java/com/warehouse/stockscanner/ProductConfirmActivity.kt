@@ -2,6 +2,7 @@ package com.warehouse.stockscanner
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -10,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import kotlinx.coroutines.launch
 
@@ -42,6 +44,19 @@ class ProductConfirmActivity : AppCompatActivity() {
             finish()
         }
 
+    // Picking a different מקט from the search screen re-links the scanned
+    // barcode to it, then this screen restarts itself with the new product's
+    // data — same as if that product had matched the scan to begin with.
+    private lateinit var scannedBarcode: String
+    private lateinit var currentLocation: String
+    private val changeSkuLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                val newSku = result.data?.getStringExtra(SearchActivity.EXTRA_SELECTED_SKU)
+                if (!newSku.isNullOrBlank()) confirmAndApplySkuChange(newSku)
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_product_confirm)
@@ -50,9 +65,9 @@ class ProductConfirmActivity : AppCompatActivity() {
         val sku = intent.getStringExtra(EXTRA_SKU).orEmpty()
         val description = intent.getStringExtra(EXTRA_DESCRIPTION).orEmpty()
         val existingBarcode = intent.getStringExtra(EXTRA_EXISTING_BARCODE).orEmpty()
-        val scannedBarcode = intent.getStringExtra(EXTRA_SCANNED_BARCODE).orEmpty()
+        scannedBarcode = intent.getStringExtra(EXTRA_SCANNED_BARCODE).orEmpty()
         val existingLocations = intent.getStringArrayListExtra(EXTRA_EXISTING_LOCATIONS).orEmpty()
-        val currentLocation = intent.getStringExtra(EXTRA_CURRENT_LOCATION).orEmpty()
+        currentLocation = intent.getStringExtra(EXTRA_CURRENT_LOCATION).orEmpty()
 
         val tvSku = findViewById<TextView>(R.id.tvSku)
         val etDescription = findViewById<EditText>(R.id.etDescription)
@@ -60,6 +75,7 @@ class ProductConfirmActivity : AppCompatActivity() {
         val tvBarcode = findViewById<TextView>(R.id.tvBarcode)
         val tvLocation = findViewById<TextView>(R.id.tvLocation)
         val btnConfirm = findViewById<Button>(R.id.btnConfirm)
+        val btnChangeSku = findViewById<Button>(R.id.btnChangeSku)
         val btnCancel = findViewById<Button>(R.id.btnCancel)
 
         // A product can sit in more than one location at once — a confirmed
@@ -77,6 +93,14 @@ class ProductConfirmActivity : AppCompatActivity() {
         btnCancel.setOnClickListener {
             setResult(RESULT_CANCELED)
             finish()
+        }
+
+        // Fixes a wrong barcode->מקט match (or a wrong pick from search):
+        // choose the right product instead, and the scanned barcode follows.
+        // Nothing to reassign without an actual scanned barcode, so hide it then.
+        btnChangeSku.visibility = if (scannedBarcode.isBlank()) View.GONE else View.VISIBLE
+        btnChangeSku.setOnClickListener {
+            changeSkuLauncher.launch(Intent(this, SearchActivity::class.java))
         }
 
         btnConfirm.setOnClickListener {
@@ -113,6 +137,44 @@ class ProductConfirmActivity : AppCompatActivity() {
                 .putExtra(InventoryActivity.EXTRA_SKU, sku)
                 .putExtra(InventoryActivity.EXTRA_LOCATION, location)
             inventoryLauncher.launch(intent)
+        }
+    }
+
+    /** [newSku] was just picked from search as the correct product for [scannedBarcode]. */
+    private fun confirmAndApplySkuChange(newSku: String) {
+        lifecycleScope.launch {
+            val newProduct = repository.findBySku(newSku)
+            if (newProduct == null) {
+                Toast.makeText(this@ProductConfirmActivity, "מקט לא נמצא", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            AlertDialog.Builder(this@ProductConfirmActivity)
+                .setTitle("שיוך ברקוד למוצר אחר")
+                .setMessage(
+                    "לשייך את הברקוד $scannedBarcode למקט ${newProduct.sku} (${newProduct.description})?\n" +
+                        "השיוך הקודם של הברקוד הזה יוסר."
+                )
+                .setPositiveButton("כן, החלף") { _, _ -> applySkuChange(newSku, newProduct) }
+                .setNegativeButton("ביטול", null)
+                .show()
+        }
+    }
+
+    private fun applySkuChange(newSku: String, fallback: ProductLookup) {
+        lifecycleScope.launch {
+            repository.reassignBarcode(scannedBarcode, newSku)
+            // Re-read after reassigning: existingBarcode/existingLocations may
+            // now differ from what was looked up just before the reassignment.
+            val refreshed = repository.findBySku(newSku) ?: fallback
+            val intent = Intent(this@ProductConfirmActivity, ProductConfirmActivity::class.java)
+                .putExtra(EXTRA_SKU, refreshed.sku)
+                .putExtra(EXTRA_DESCRIPTION, refreshed.description)
+                .putExtra(EXTRA_EXISTING_BARCODE, refreshed.barcode)
+                .putExtra(EXTRA_SCANNED_BARCODE, scannedBarcode)
+                .putStringArrayListExtra(EXTRA_EXISTING_LOCATIONS, ArrayList(refreshed.existingLocations))
+                .putExtra(EXTRA_CURRENT_LOCATION, currentLocation)
+            startActivity(intent)
+            finish()
         }
     }
 }

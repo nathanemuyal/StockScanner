@@ -23,6 +23,12 @@ interface BarcodeAliasDao {
     @Query("SELECT sku FROM barcode_aliases WHERE barcode = :barcode LIMIT 1")
     suspend fun findSkuByBarcode(barcode: String): String?
 
+    // Used when correcting a barcode that was mistakenly linked to the wrong
+    // מקט: its old alias row (if any) is removed before it's attached
+    // elsewhere, since barcode is unique across the table.
+    @Query("DELETE FROM barcode_aliases WHERE barcode = :barcode")
+    suspend fun deleteByBarcode(barcode: String)
+
     @Query("SELECT * FROM barcode_aliases WHERE sku = :sku ORDER BY id ASC")
     suspend fun findAllBySku(sku: String): List<BarcodeAliasEntity>
 
