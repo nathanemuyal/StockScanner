@@ -461,6 +461,92 @@ class ProductRepositoryTest {
     }
 
     @Test
+    fun `removeFromLocation deletes just that row when the sku has other locations too`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0),
+                ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1)
+            )
+        )
+
+        repository.removeFromLocation("ABC-123", "A-01-05")
+
+        assertEquals(1, repository.count())
+        val remaining = repository.findBySku("ABC-123")!!
+        assertEquals(listOf("B-02-01"), remaining.existingLocations)
+    }
+
+    @Test
+    fun `removeFromLocation on a sku's only location clears the row instead of deleting it`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity(
+                    "ABC-123", "מוצר", "111", "A-01-05", 0,
+                    ProductEntity.TYPE_PACKAGE, 12, 5, 60
+                )
+            )
+        )
+
+        repository.removeFromLocation("ABC-123", "A-01-05")
+
+        // The row survives (sku/description/barcode aren't lost)...
+        assertEquals(1, repository.count())
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals("ABC-123", row.sku)
+        assertEquals("111", row.barcode)
+        // ...but no longer sits at any location, and its quantity was reset.
+        assertEquals("", row.location)
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+        assertEquals(0, row.quantity)
+        assertTrue(repository.findBySku("ABC-123")!!.existingLocations.isEmpty())
+    }
+
+    @Test
+    fun `removeFromLocation for a sku with no row at that location is a no-op`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+
+        repository.removeFromLocation("ABC-123", "NOWHERE")
+
+        assertEquals(1, repository.count())
+        assertEquals(listOf("A-01-05"), repository.findBySku("ABC-123")!!.existingLocations)
+    }
+
+    @Test
+    fun `removeFromLocation deletes the right row without disturbing an existing blank row for the same sku`() = runBlocking {
+        // Can happen after an Excel import that already had a not-yet-placed
+        // row alongside a real one for the same מקט.
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "", 0),
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 1)
+            )
+        )
+
+        repository.removeFromLocation("ABC-123", "A-01-05")
+
+        val remaining = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals("", remaining.location)
+        assertEquals(1, repository.count())
+    }
+
+    @Test
+    fun `removeFromLocation, like updateProduct, never writes to disk by itself`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
+        )
+        repository.loadFromExcel(sourceUri)
+        val snapshotAfterLoad = workingCopyFile().readBytes()
+
+        repository.removeFromLocation("ABC-123", "A-01-05")
+
+        assertArrayEquals(snapshotAfterLoad, workingCopyFile().readBytes())
+        // The in-memory change did take effect — only the disk write is deferred.
+        assertEquals("", db.productDao().findAllBySku("ABC-123").single().location)
+    }
+
+    @Test
     fun `loading a different source file replaces the working copy, not merges with it`() = runBlocking {
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("OLD", "old product", "", "A-01-01", 0))))
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("NEW", "new product", "", "A-01-02", 0))))

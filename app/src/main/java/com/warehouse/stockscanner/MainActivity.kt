@@ -12,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.warehouse.stockscanner.data.ProductEntity
 import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import com.warehouse.stockscanner.data.SessionPrefs
@@ -105,7 +106,13 @@ class MainActivity : AppCompatActivity() {
         tvScannedProductsLabel = findViewById(R.id.tvScannedProductsLabel)
         recyclerScannedProducts = findViewById(R.id.recyclerScannedProducts)
 
-        scannedProductsAdapter = SearchResultAdapter { /* view-only list, no action on tap */ }
+        // The row itself stays view-only (tapping it does nothing) — only its
+        // red "−" button offers to undo the product having been added to this
+        // shelf, e.g. because it was scanned by mistake or actually pulled off.
+        scannedProductsAdapter = SearchResultAdapter(
+            onClick = { /* view-only row, removal is via the "−" button only */ },
+            onRemoveClick = { product -> confirmRemoveFromLocation(product) }
+        )
         recyclerScannedProducts.layoutManager = LinearLayoutManager(this)
         recyclerScannedProducts.adapter = scannedProductsAdapter
 
@@ -183,6 +190,21 @@ class MainActivity : AppCompatActivity() {
             .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList(product.existingLocations))
             .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, currentLocation)
         productConfirmLauncher.launch(intent)
+    }
+
+    /** Confirms, then undoes [product] having been added to the current location's shelf. */
+    private fun confirmRemoveFromLocation(product: ProductEntity) {
+        AlertDialog.Builder(this)
+            .setTitle("הסרת מוצר מהמדף")
+            .setMessage("להסיר את \"${product.description}\" (${product.sku}) מהמיקום הנוכחי?")
+            .setPositiveButton("כן, הסר") { _, _ ->
+                lifecycleScope.launch {
+                    repository.removeFromLocation(product.sku, product.location)
+                    updateUiState()
+                }
+            }
+            .setNegativeButton("ביטול", null)
+            .show()
     }
 
     private fun updateUiState() {

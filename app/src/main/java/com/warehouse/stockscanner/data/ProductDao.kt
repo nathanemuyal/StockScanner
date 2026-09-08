@@ -1,6 +1,7 @@
 package com.warehouse.stockscanner.data
 
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -43,4 +44,7 @@ interface ProductDao {
 
     @Update
     suspend fun update(product: ProductEntity)
+
+    @Delete
+    suspend fun delete(product: ProductEntity)
 }
