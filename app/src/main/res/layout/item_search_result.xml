@@ -34,19 +34,21 @@
 
         <!-- Only shown where the adapter is given a removal action (the
              shelf list on the main screen) — hidden everywhere else (e.g.
-             the description-search results, which are select-only). -->
+             the description-search results, which are select-only). Plain
+             red glyph, no circle/box behind it — just a borderless ripple
+             on touch, to keep the row uncluttered. -->
         <TextView
             android:id="@+id/btnRemoveFromLocation"
             android:layout_width="40dp"
             android:layout_height="40dp"
-            android:layout_marginStart="12dp"
-            android:background="@drawable/bg_remove_button"
+            android:layout_marginStart="8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="הסר מהמיקום"
             android:gravity="center"
             android:includeFontPadding="false"
             android:text="−"
-            android:textColor="@color/white"
-            android:textSize="22sp"
+            android:textColor="@color/color_warning"
+            android:textSize="28sp"
             android:textStyle="bold"
             android:visibility="gone" />
 
