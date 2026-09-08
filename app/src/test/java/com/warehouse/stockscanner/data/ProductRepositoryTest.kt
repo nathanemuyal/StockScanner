@@ -237,6 +237,67 @@ class ProductRepositoryTest {
     }
 
     @Test
+    fun `updateQuantity in units mode stores the quantity directly on that row only`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0),
+                ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1)
+            )
+        )
+
+        repository.updateQuantity("ABC-123", "A-01-05", ProductEntity.TYPE_UNITS, 0, 0, 15)
+
+        val rows = db.productDao().findAllBySku("ABC-123")
+        val updatedRow = rows.first { it.location == "A-01-05" }
+        val untouchedRow = rows.first { it.location == "B-02-01" }
+        assertEquals(ProductEntity.TYPE_UNITS, updatedRow.quantityType)
+        assertEquals(15, updatedRow.quantity)
+        assertEquals(0, untouchedRow.quantity) // quantity is per row, other locations are unaffected
+    }
+
+    @Test
+    fun `updateQuantity in package mode stores the breakdown alongside the computed total`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+
+        repository.updateQuantity("ABC-123", "A-01-05", ProductEntity.TYPE_PACKAGE, 12, 5, 60)
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(ProductEntity.TYPE_PACKAGE, row.quantityType)
+        assertEquals(12, row.packageContent)
+        assertEquals(5, row.packageCount)
+        assertEquals(60, row.quantity)
+    }
+
+    @Test
+    fun `updateQuantity for a location with no row is a no-op`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+
+        repository.updateQuantity("ABC-123", "DOES-NOT-EXIST", ProductEntity.TYPE_UNITS, 0, 0, 15)
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(0, row.quantity)
+    }
+
+    @Test
+    fun `findRow returns the exact sku+location row, prefill-ready for the inventory screen`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60),
+                ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1)
+            )
+        )
+
+        val row = repository.findRow("ABC-123", "A-01-05")!!
+        assertEquals(60, row.quantity)
+        assertEquals(ProductEntity.TYPE_PACKAGE, row.quantityType)
+        assertNull(repository.findRow("ABC-123", "NOWHERE"))
+    }
+
+    @Test
     fun `loading a different source file replaces the working copy, not merges with it`() = runBlocking {
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("OLD", "old product", "", "A-01-01", 0))))
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("NEW", "new product", "", "A-01-02", 0))))

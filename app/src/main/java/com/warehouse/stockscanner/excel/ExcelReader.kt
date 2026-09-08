@@ -35,6 +35,10 @@ object ExcelReader {
     private const val COL_DESCRIPTION = "תאור"
     private const val COL_BARCODE = "ברקוד"
     private const val COL_LOCATION = "מיקום"
+    private const val COL_QUANTITY_TYPE = "סוג כמות"
+    private const val COL_PACKAGE_CONTENT = "תכולת אריזה"
+    private const val COL_PACKAGE_COUNT = "כמות אריזות"
+    private const val COL_QUANTITY = "כמות יחידות"
 
     // The working file only ever has a single "מיקום" column — a product at
     // several locations is several rows, not several columns. Numbered
@@ -206,6 +210,15 @@ object ExcelReader {
         val descCol = headers[COL_DESCRIPTION]
         val barcodeCol = headers[COL_BARCODE]
 
+        // Quantity columns are optional — a file exported before the
+        // inventory screen existed, or one edited by hand, simply won't have
+        // them, and every row then falls back to "יחידות" / 0, same as a
+        // freshly-confirmed row whose quantity hasn't been entered yet.
+        val quantityTypeCol = headers[COL_QUANTITY_TYPE]
+        val packageContentCol = headers[COL_PACKAGE_CONTENT]
+        val packageCountCol = headers[COL_PACKAGE_COUNT]
+        val quantityCol = headers[COL_QUANTITY]
+
         // Every header matching "מיקום" or "מיקום <n>", in ascending order of
         // n (the bare "מיקום" counts as 1) — each becomes its own row for the
         // sku (see the expansion below), rather than one merged value.
@@ -232,7 +245,16 @@ object ExcelReader {
         // a product with N locations becomes N rows, not one row with a
         // combined cell. A row with no location at all still becomes one row,
         // with a blank מיקום, so the product exists even before it's shelved.
-        data class RawTuple(val sku: String, val description: String, val barcode: String, val location: String)
+        data class RawTuple(
+            val sku: String,
+            val description: String,
+            val barcode: String,
+            val location: String,
+            val quantityType: String,
+            val packageContent: Int,
+            val packageCount: Int,
+            val quantity: Int
+        )
 
         val rawTuples = ArrayList<RawTuple>()
         for (row in dataRows) {
@@ -241,11 +263,19 @@ object ExcelReader {
             val description = row[descCol!!]?.trim().orEmpty()
             val barcode = row[barcodeCol!!]?.trim().orEmpty()
             val locations = locationCols.mapNotNull { row[it]?.trim() }.filter { it.isNotEmpty() }.distinct()
+
+            val quantityType = quantityTypeCol?.let { row[it]?.trim() }
+                .takeIf { it == ProductEntity.TYPE_PACKAGE }
+                ?: ProductEntity.TYPE_UNITS
+            val packageContent = packageContentCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+            val packageCount = packageCountCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+            val quantity = quantityCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+
             if (locations.isEmpty()) {
-                rawTuples.add(RawTuple(sku, description, barcode, ""))
+                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, quantity))
             } else {
                 for (location in locations) {
-                    rawTuples.add(RawTuple(sku, description, barcode, location))
+                    rawTuples.add(RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, quantity))
                 }
             }
         }
@@ -259,7 +289,10 @@ object ExcelReader {
             bySkuAndLocation[t.sku to t.location] = t
         }
         val products = bySkuAndLocation.values.mapIndexed { index, t ->
-            ProductEntity(t.sku, t.description, t.barcode, t.location, index)
+            ProductEntity(
+                t.sku, t.description, t.barcode, t.location, index,
+                t.quantityType, t.packageContent, t.packageCount, t.quantity
+            )
         }
         val duplicateRows = rawTuples.size - bySkuAndLocation.size
 

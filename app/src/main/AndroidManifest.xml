@@ -32,6 +32,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".InventoryActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".SearchActivity"
             android:exported="false" />
 

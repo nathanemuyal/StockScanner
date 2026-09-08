@@ -19,6 +19,10 @@ object ExcelWriter {
     private const val COL_DESCRIPTION = "תאור"
     private const val COL_BARCODE = "ברקוד"
     private const val COL_LOCATION = "מיקום"
+    private const val COL_QUANTITY_TYPE = "סוג כמות"
+    private const val COL_PACKAGE_CONTENT = "תכולת אריזה"
+    private const val COL_PACKAGE_COUNT = "כמות אריזות"
+    private const val COL_QUANTITY = "כמות יחידות"
 
     /**
      * Core writing logic, decoupled from Context/Uri so it can also be driven
@@ -74,8 +78,14 @@ object ExcelWriter {
     private fun sheetXml(products: List<ProductEntity>): String {
         // A product with several locations is several rows sharing the same
         // sku/description/barcode, each with its own single מיקום value —
-        // never a combined cell or extra numbered columns.
-        val headers = listOf(COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION)
+        // never a combined cell or extra numbered columns. Quantity is also
+        // per row: either entered directly (סוג כמות = יחידות) or derived
+        // from a package breakdown (סוג כמות = אריזות), with כמות יחידות
+        // always holding the final unit count either way.
+        val headers = listOf(
+            COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION,
+            COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_QUANTITY
+        )
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -98,6 +108,10 @@ object ExcelWriter {
             sb.append(cell("B", rowNum, product.description))
             sb.append(cell("C", rowNum, product.barcode))
             sb.append(cell("D", rowNum, product.location))
+            sb.append(cell("E", rowNum, product.quantityType))
+            sb.append(cell("F", rowNum, product.packageContent.toString()))
+            sb.append(cell("G", rowNum, product.packageCount.toString()))
+            sb.append(cell("H", rowNum, product.quantity.toString()))
             sb.append("</row>")
             rowNum++
         }

@@ -25,6 +25,10 @@ interface ProductDao {
     @Query("SELECT * FROM products WHERE sku = :sku ORDER BY rowOrder ASC")
     suspend fun findAllBySku(sku: String): List<ProductEntity>
 
+    /** The single row for [sku] at exactly [location] — quantity lives on this row. */
+    @Query("SELECT * FROM products WHERE sku = :sku AND location = :location LIMIT 1")
+    suspend fun findBySkuAndLocation(sku: String, location: String): ProductEntity?
+
     @Query("SELECT * FROM products ORDER BY rowOrder ASC")
     suspend fun getAllOrdered(): List<ProductEntity>
 
