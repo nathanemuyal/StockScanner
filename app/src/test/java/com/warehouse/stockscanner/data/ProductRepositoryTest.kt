@@ -514,6 +514,39 @@ class ProductRepositoryTest {
     }
 
     @Test
+    fun `removeFromLocation deletes the right row without disturbing an existing blank row for the same sku`() = runBlocking {
+        // Can happen after an Excel import that already had a not-yet-placed
+        // row alongside a real one for the same מקט.
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "", 0),
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 1)
+            )
+        )
+
+        repository.removeFromLocation("ABC-123", "A-01-05")
+
+        val remaining = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals("", remaining.location)
+        assertEquals(1, repository.count())
+    }
+
+    @Test
+    fun `removeFromLocation, like updateProduct, never writes to disk by itself`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
+        )
+        repository.loadFromExcel(sourceUri)
+        val snapshotAfterLoad = workingCopyFile().readBytes()
+
+        repository.removeFromLocation("ABC-123", "A-01-05")
+
+        assertArrayEquals(snapshotAfterLoad, workingCopyFile().readBytes())
+        // The in-memory change did take effect — only the disk write is deferred.
+        assertEquals("", db.productDao().findAllBySku("ABC-123").single().location)
+    }
+
+    @Test
     fun `loading a different source file replaces the working copy, not merges with it`() = runBlocking {
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("OLD", "old product", "", "A-01-01", 0))))
         repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("NEW", "new product", "", "A-01-02", 0))))
