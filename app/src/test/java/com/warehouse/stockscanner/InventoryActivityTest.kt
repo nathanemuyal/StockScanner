@@ -25,8 +25,8 @@ import org.robolectric.shadows.ShadowToast
 /**
  * The inventory screen shown right after a product is confirmed: it must
  * record either a direct unit count or a package breakdown (auto-computing
- * the resulting unit total), scoped to exactly the (sku, location) row it
- * was opened for.
+ * the resulting unit total), scoped to exactly the (sku, location, barcode)
+ * row it was opened for.
  */
 @RunWith(RobolectricTestRunner::class)
 class InventoryActivityTest {
@@ -60,10 +60,11 @@ class InventoryActivityTest {
         runBlocking { AppDatabase.getInstance(context).productDao().insertAll(listOf(row)) }
     }
 
-    private fun launch(sku: String, location: String): InventoryActivity {
+    private fun launch(sku: String, location: String, barcode: String = "111"): InventoryActivity {
         val intent = Intent(context, InventoryActivity::class.java)
             .putExtra(InventoryActivity.EXTRA_SKU, sku)
             .putExtra(InventoryActivity.EXTRA_LOCATION, location)
+            .putExtra(InventoryActivity.EXTRA_BARCODE, barcode)
         return Robolectric.buildActivity(InventoryActivity::class.java, intent).setup().get()
     }
 
@@ -158,7 +159,7 @@ class InventoryActivityTest {
     @Test
     fun `updateQuantity is scoped to this location, findRow for a different one stays null`() = runBlocking {
         insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
-        assertNull(context.repository.findRow("ABC-123", "NOWHERE"))
+        assertNull(context.repository.findRow("ABC-123", "NOWHERE", "111"))
     }
 
     /**

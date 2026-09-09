@@ -224,7 +224,7 @@ class MainActivity : AppCompatActivity() {
             .setMessage("להסיר את \"${product.description}\" (${product.sku}) מהמיקום הנוכחי?")
             .setPositiveButton("כן, הסר") { _, _ ->
                 lifecycleScope.launch {
-                    repository.removeFromLocation(product.sku, product.location)
+                    repository.removeFromLocation(product)
                     updateUiState()
                 }
             }

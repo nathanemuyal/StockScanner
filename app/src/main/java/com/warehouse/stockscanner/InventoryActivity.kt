@@ -21,13 +21,14 @@ import kotlinx.coroutines.launch
 /**
  * Inventory screen shown right after a product scan is confirmed
  * ([ProductConfirmActivity]) and before the app returns to scan the next
- * product. Records how much stock sits at that (sku, location) row: either
- * a straight unit count, or a package breakdown (units per package × number
- * of packages), which is converted to a unit count automatically. Nothing
- * is saved until "שמור והמשך" is tapped — and that tap physically writes
- * the row to the Excel working files right away (scan-by-scan), not just to
- * the in-memory database: a sku can have several rows (one per location, or
- * even one per barcode sharing a location — see [ProductEntity]), so every
+ * product. Records how much stock sits at that exact (sku, location,
+ * barcode) row: either a straight unit count, or a package breakdown (units
+ * per package × number of packages), which is converted to a unit count
+ * automatically. Nothing is saved until "שמור והמשך" is tapped — and that
+ * tap physically writes the row to the Excel working files right away
+ * (scan-by-scan), not just to the in-memory database: a sku can have several
+ * rows (one per location, or even several at the very same location if
+ * different barcodes were scanned there — see [ProductEntity]), so every
  * individual scan+quantity needs to land in the file on its own rather than
  * waiting for the whole shelf to be finished. Screen stays open and reports
  * the failure if that physical write fails, mirroring "סיים מיקום" in
@@ -38,11 +39,13 @@ class InventoryActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_SKU = "sku"
         const val EXTRA_LOCATION = "location"
+        const val EXTRA_BARCODE = "barcode"
     }
 
     private lateinit var repository: ProductRepository
     private var sku: String = ""
     private var location: String = ""
+    private var barcode: String = ""
 
     private lateinit var rgQuantityType: RadioGroup
     private lateinit var rbUnits: RadioButton
@@ -61,6 +64,7 @@ class InventoryActivity : AppCompatActivity() {
 
         sku = intent.getStringExtra(EXTRA_SKU).orEmpty()
         location = intent.getStringExtra(EXTRA_LOCATION).orEmpty()
+        barcode = intent.getStringExtra(EXTRA_BARCODE).orEmpty()
 
         rgQuantityType = findViewById(R.id.rgQuantityType)
         rbUnits = findViewById(R.id.rbUnits)
@@ -91,7 +95,7 @@ class InventoryActivity : AppCompatActivity() {
     /** Re-scanning the same product at the same location should show whatever quantity was already recorded. */
     private fun prefillFromExistingRow() {
         lifecycleScope.launch {
-            val existing = repository.findRow(sku, location)
+            val existing = repository.findRow(sku, location, barcode)
             if (existing != null && existing.quantityType == ProductEntity.TYPE_PACKAGE) {
                 rbPackage.isChecked = true
                 etPackageContent.setText(existing.packageContent.takeIf { it != 0 }?.toString() ?: "")
@@ -141,7 +145,7 @@ class InventoryActivity : AppCompatActivity() {
      */
     private fun saveAndFinish(quantityType: String, packageContent: Int, packageCount: Int, quantity: Int) {
         lifecycleScope.launch {
-            repository.updateQuantity(sku, location, quantityType, packageContent, packageCount, quantity)
+            repository.updateQuantity(sku, location, barcode, quantityType, packageContent, packageCount, quantity)
             try {
                 repository.saveWorkingCopies()
                 setResult(RESULT_OK)

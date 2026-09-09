@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -179,29 +180,31 @@ class SkuBarcodeIntegrityTest {
         }
     }
 
-    // --- 3. A second, different barcode scanned for a known sku (alias) -----
+    // --- 3. A second, different barcode scanned for a known sku -------------
 
     @Test
-    fun `a different barcode scanned for a known sku becomes an alias, the row's own barcode is untouched, neither is ever the sku`() {
+    fun `a different barcode scanned at a location the sku already has opens its own row, neither row's barcode is ever the sku`() {
         val primaryBarcode = "111"
         val secondBarcode = "222"
         loadCatalog(listOf(ProductEntity("ABC-123", "מצבר 12V", "", "", 0)), "sku-barcode-alias")
 
-        // First scan establishes the primary barcode...
+        // First scan establishes the first barcode at this location...
         confirmAndRecordQuantity("ABC-123", "מצבר 12V", "", primaryBarcode, "A-01-05", 4)
         // ...same location re-confirmed, but with a different scanned barcode
         // (e.g. a second barcode sticker on the very same product/location).
         confirmAndRecordQuantity("ABC-123", "מצבר 12V", primaryBarcode, secondBarcode, "A-01-05", 5)
 
-        val row = savedLocationsRows().single()
-        assertEquals("ABC-123", row.sku)
-        assertEquals("the row's own barcode column must stay the original primary, never the sku", primaryBarcode, row.barcode)
+        // Both barcodes now have their own row at that location — a distinct
+        // row per scan, never siloed into a separate "aliases" file.
+        val rows = savedLocationsRows()
+        assertEquals(2, rows.size)
+        assertTrue(rows.all { it.sku == "ABC-123" && it.location == "A-01-05" })
+        assertEquals(setOf(primaryBarcode, secondBarcode), rows.map { it.barcode }.toSet())
+        assertTrue("neither row's barcode column may ever be the sku", rows.none { it.barcode == it.sku })
 
         val aliasFile = context.repository.multipleBarcodesFile()!!
         val aliases = aliasFile.inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
-        assertEquals(1, aliases.size)
-        assertEquals("ABC-123", aliases.single().sku)
-        assertEquals("the alias barcode column must be the actually-scanned second barcode, not the sku", secondBarcode, aliases.single().barcode)
+        assertTrue("a normal scan no longer writes to the aliases file", aliases.isEmpty())
     }
 
     // --- 4. Barcode not found -> search by description -> confirm -----------
@@ -326,15 +329,14 @@ class SkuBarcodeIntegrityTest {
         inventoryActivity.findViewById<Button>(R.id.btnSaveInventory).performClick()
         awaitUntil { inventoryActivity.isFinishing }
 
-        // RIGHT-1 now has two scanned rows (its original B-02-01 one, plus the
-        // new A-01-05 one this confirm just opened) — both must carry the
-        // real reassigned barcode, never the sku.
+        // RIGHT-1 now has two scanned rows: its original B-02-01 one
+        // (unrelated, still blank barcode) and the new A-01-05 one carrying
+        // the reassigned barcode — neither is ever the sku itself.
         val rightRows = savedLocationsRows().filter { it.sku == "RIGHT-1" }
         assertEquals(2, rightRows.size)
-        for (row in rightRows) {
-            assertEquals(scannedBarcode, row.barcode)
-            assertNotEquals(row.sku, row.barcode)
-        }
+        assertEquals(scannedBarcode, rightRows.single { it.location == "A-01-05" }.barcode)
+        assertEquals("", rightRows.single { it.location == "B-02-01" }.barcode)
+        assertTrue(rightRows.none { it.barcode == it.sku })
 
         // WRONG-1 lost the barcode (moved away), but its own sku must never
         // have leaked into its barcode column either.

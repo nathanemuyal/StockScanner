@@ -136,6 +136,11 @@ class ProductConfirmActivity : AppCompatActivity() {
             val intent = Intent(this@ProductConfirmActivity, InventoryActivity::class.java)
                 .putExtra(InventoryActivity.EXTRA_SKU, sku)
                 .putExtra(InventoryActivity.EXTRA_LOCATION, location)
+                // Trimmed to match exactly what updateProduct just stored on
+                // the row — InventoryActivity needs it to find that same row
+                // again, since a sku can have several rows at this very
+                // location (one per distinct barcode).
+                .putExtra(InventoryActivity.EXTRA_BARCODE, barcode.trim())
             inventoryLauncher.launch(intent)
         }
     }

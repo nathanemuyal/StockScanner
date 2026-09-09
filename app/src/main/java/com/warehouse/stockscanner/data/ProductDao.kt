@@ -26,9 +26,14 @@ interface ProductDao {
     @Query("SELECT * FROM products WHERE sku = :sku ORDER BY rowOrder ASC")
     suspend fun findAllBySku(sku: String): List<ProductEntity>
 
-    /** The single row for [sku] at exactly [location] — quantity lives on this row. */
-    @Query("SELECT * FROM products WHERE sku = :sku AND location = :location LIMIT 1")
-    suspend fun findBySkuAndLocation(sku: String, location: String): ProductEntity?
+    /**
+     * The single row for [sku] at exactly [location] with exactly [barcode]
+     * — quantity lives on this row. A sku can have several rows at the same
+     * [location] (a different [barcode] scanned there), so all three are
+     * needed to pick out one unambiguous row.
+     */
+    @Query("SELECT * FROM products WHERE sku = :sku AND location = :location AND barcode = :barcode LIMIT 1")
+    suspend fun findBySkuLocationAndBarcode(sku: String, location: String, barcode: String): ProductEntity?
 
     @Query("SELECT * FROM products ORDER BY rowOrder ASC")
     suspend fun getAllOrdered(): List<ProductEntity>
