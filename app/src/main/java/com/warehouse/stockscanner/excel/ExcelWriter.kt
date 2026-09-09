@@ -8,11 +8,20 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Minimal, dependency-free XLSX writer. Produces a valid single-sheet
- * .xlsx package by hand (no Apache POI). Every cell is written as an
- * inline string (t="inlineStr") — this keeps the writer simple and,
- * importantly, guarantees sku values like "0001234" keep their leading
- * zeros instead of being reinterpreted as numbers.
+ * Minimal, dependency-free XLSX writer. Produces valid .xlsx packages by
+ * hand (no Apache POI). Every cell is written as an inline string
+ * (t="inlineStr") — this keeps the writer simple and, importantly,
+ * guarantees sku values like "0001234" keep their leading zeros instead of
+ * being reinterpreted as numbers.
+ *
+ * Two kinds of files are produced, matching the app's two working files
+ * (see [com.warehouse.stockscanner.data.ProductRepository]):
+ *  - [writeLocationsQuantitiesToStream]: the product/location/quantity table.
+ *  - [writeMultipleBarcodesToStream]: the מקט -> extra ברקוד mapping.
+ * [writeProductsToStream] additionally produces a single combined workbook
+ * (product sheet + alias sheet) — kept for backward compatibility (it's the
+ * format [ExcelReader] still accepts for an externally-produced source file)
+ * and reused by tests to build fixtures.
  */
 object ExcelWriter {
 
@@ -27,6 +36,14 @@ object ExcelWriter {
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
+
+    private val PRODUCT_HEADERS = listOf(
+        COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION,
+        COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_QUANTITY
+    )
+
+    // Order matches the task spec's example: מק"ט, תיאור, ברקוד.
+    private val MULTIPLE_BARCODES_HEADERS = listOf(COL_ALIAS_SKU, COL_DESCRIPTION, COL_ALIAS_BARCODE)
 
     /**
      * Core writing logic, decoupled from Context/Uri so it can also be driven
@@ -45,15 +62,52 @@ object ExcelWriter {
 
         BufferedOutputStream(output).use { buffered ->
             ZipOutputStream(buffered).use { zip ->
-                writeEntry(zip, "[Content_Types].xml", contentTypesXml())
+                writeEntry(zip, "[Content_Types].xml", contentTypesXml(twoSheets = true))
                 writeEntry(zip, "_rels/.rels", relsXml())
                 writeEntry(zip, "xl/workbook.xml", workbookXml())
-                writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml())
+                writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml(twoSheets = true))
                 writeEntry(zip, "xl/styles.xml", stylesXml())
-                writeEntry(zip, "xl/worksheets/sheet1.xml", sheetXml(ordered))
-                writeEntry(zip, "xl/worksheets/sheet2.xml", aliasSheetXml(aliases))
+                writeEntry(zip, "xl/worksheets/sheet1.xml", genericSheetXml(PRODUCT_HEADERS, productRows(ordered)))
+                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, ordered)))
             }
         }
+    }
+
+    /**
+     * The "locations + quantities" working file: sku, description, barcode,
+     * location and the quantity breakdown — one row per (sku, location), same
+     * shape as this app's product table itself (see
+     * [com.warehouse.stockscanner.data.ProductEntity]).
+     */
+    fun writeLocationsQuantitiesToStream(output: OutputStream, products: List<ProductEntity>) {
+        val ordered = products.sortedBy { it.rowOrder }
+        writeSingleSheetPackage(output, PRODUCT_HEADERS, productRows(ordered))
+    }
+
+    /**
+     * The "multiple barcodes per מקט" working file: every extra ברקוד
+     * aliased to a sku that already has its own primary one, alongside that
+     * sku's description for readability (looked up from [products], not
+     * stored redundantly on [BarcodeAliasEntity] itself).
+     */
+    fun writeMultipleBarcodesToStream(
+        output: OutputStream,
+        aliases: List<BarcodeAliasEntity>,
+        products: List<ProductEntity>
+    ) {
+        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, products))
+    }
+
+    private fun productRows(products: List<ProductEntity>): List<List<String>> = products.map { p ->
+        listOf(
+            p.sku, p.description, p.barcode, p.location,
+            p.quantityType, p.packageContent.toString(), p.packageCount.toString(), p.quantity.toString()
+        )
+    }
+
+    private fun aliasRows(aliases: List<BarcodeAliasEntity>, products: List<ProductEntity>): List<List<String>> {
+        val descriptionBySku = products.groupBy { it.sku }.mapValues { (_, rows) -> rows.first().description }
+        return aliases.map { alias -> listOf(alias.sku, descriptionBySku[alias.sku].orEmpty(), alias.barcode) }
     }
 
     private fun writeEntry(zip: ZipOutputStream, name: String, content: String) {
@@ -88,22 +142,12 @@ object ExcelWriter {
         return "<c r=\"$ref\" t=\"inlineStr\"><is><t xml:space=\"preserve\">${escapeXml(value)}</t></is></c>"
     }
 
-    private fun sheetXml(products: List<ProductEntity>): String {
-        // A product with several locations is several rows sharing the same
-        // sku/description/barcode, each with its own single מיקום value —
-        // never a combined cell or extra numbered columns. Quantity is also
-        // per row: either entered directly (סוג כמות = יחידות) or derived
-        // from a package breakdown (סוג כמות = אריזות), with כמות יחידות
-        // always holding the final unit count either way.
-        val headers = listOf(
-            COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION,
-            COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_QUANTITY
-        )
-
+    /** A single worksheet's XML: a header row followed by one row per entry of [rows] (values in header order). */
+    private fun genericSheetXml(headers: List<String>, rows: List<List<String>>): String {
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
-        val lastRow = products.size + 1
+        val lastRow = rows.size + 1
         val lastColLetter = ExcelColumns.indexToLetter(headers.size - 1)
         sb.append("<dimension ref=\"A1:$lastColLetter$lastRow\"/>")
         sb.append("<sheetData>")
@@ -115,16 +159,11 @@ object ExcelWriter {
         sb.append("</row>")
 
         var rowNum = 2
-        for (product in products) {
+        for (row in rows) {
             sb.append("<row r=\"$rowNum\">")
-            sb.append(cell("A", rowNum, product.sku))
-            sb.append(cell("B", rowNum, product.description))
-            sb.append(cell("C", rowNum, product.barcode))
-            sb.append(cell("D", rowNum, product.location))
-            sb.append(cell("E", rowNum, product.quantityType))
-            sb.append(cell("F", rowNum, product.packageContent.toString()))
-            sb.append(cell("G", rowNum, product.packageCount.toString()))
-            sb.append(cell("H", rowNum, product.quantity.toString()))
+            row.forEachIndexed { index, value ->
+                sb.append(cell(ExcelColumns.indexToLetter(index), rowNum, value))
+            }
             sb.append("</row>")
             rowNum++
         }
@@ -134,39 +173,27 @@ object ExcelWriter {
         return sb.toString()
     }
 
-    /** "ברקודים כפולים": one row per extra barcode aliased to a sku that already has its own. */
-    private fun aliasSheetXml(aliases: List<BarcodeAliasEntity>): String {
-        val headers = listOf(COL_ALIAS_BARCODE, COL_ALIAS_SKU)
-
-        val sb = StringBuilder()
-        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
-        sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
-        val lastRow = aliases.size + 1
-        val lastColLetter = ExcelColumns.indexToLetter(headers.size - 1)
-        sb.append("<dimension ref=\"A1:$lastColLetter$lastRow\"/>")
-        sb.append("<sheetData>")
-
-        sb.append("<row r=\"1\">")
-        headers.forEachIndexed { index, header ->
-            sb.append(cell(ExcelColumns.indexToLetter(index), 1, header))
+    /** A complete, valid single-sheet .xlsx package containing just [headers]/[rows]. */
+    private fun writeSingleSheetPackage(output: OutputStream, headers: List<String>, rows: List<List<String>>) {
+        BufferedOutputStream(output).use { buffered ->
+            ZipOutputStream(buffered).use { zip ->
+                writeEntry(zip, "[Content_Types].xml", contentTypesXml(twoSheets = false))
+                writeEntry(zip, "_rels/.rels", relsXml())
+                writeEntry(zip, "xl/workbook.xml", singleSheetWorkbookXml())
+                writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml(twoSheets = false))
+                writeEntry(zip, "xl/styles.xml", stylesXml())
+                writeEntry(zip, "xl/worksheets/sheet1.xml", genericSheetXml(headers, rows))
+            }
         }
-        sb.append("</row>")
-
-        var rowNum = 2
-        for (alias in aliases) {
-            sb.append("<row r=\"$rowNum\">")
-            sb.append(cell("A", rowNum, alias.barcode))
-            sb.append(cell("B", rowNum, alias.sku))
-            sb.append("</row>")
-            rowNum++
-        }
-
-        sb.append("</sheetData>")
-        sb.append("</worksheet>")
-        return sb.toString()
     }
 
-    private fun contentTypesXml(): String = """
+    private fun contentTypesXml(twoSheets: Boolean): String {
+        val sheet2Override = if (twoSheets) {
+            "<Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        } else {
+            ""
+        }
+        return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
         <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -174,9 +201,10 @@ object ExcelWriter {
         <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
         <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
         <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-        <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+        $sheet2Override
         </Types>
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     private fun relsXml(): String = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -195,14 +223,30 @@ object ExcelWriter {
         </workbook>
     """.trimIndent()
 
-    private fun workbookRelsXml(): String = """
+    private fun singleSheetWorkbookXml(): String = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <sheets>
+        <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+        </sheets>
+        </workbook>
+    """.trimIndent()
+
+    private fun workbookRelsXml(twoSheets: Boolean): String {
+        val sheet2Rel = if (twoSheets) {
+            "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet2.xml\"/>"
+        } else {
+            ""
+        }
+        return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
         <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
         <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-        <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+        $sheet2Rel
         </Relationships>
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     private fun stylesXml(): String = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>

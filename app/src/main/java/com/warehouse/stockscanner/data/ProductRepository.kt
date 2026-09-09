@@ -2,12 +2,18 @@ package com.warehouse.stockscanner.data
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import com.warehouse.stockscanner.excel.ExcelLoadResult
 import com.warehouse.stockscanner.excel.ExcelReader
+import com.warehouse.stockscanner.excel.ExcelSaveException
 import com.warehouse.stockscanner.excel.ExcelWriter
 import com.warehouse.stockscanner.util.SearchUtils
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+
+private const val TAG = "ProductRepository"
+private const val DEFAULT_ORIGINAL_FILE_NAME = "products.xlsx"
 
 /**
  * A product plus every location it's already recorded at, aggregated across
@@ -24,30 +30,62 @@ data class ProductLookup(
 class ProductRepository(
     private val context: Context,
     private val dao: ProductDao,
-    private val aliasDao: BarcodeAliasDao
+    private val aliasDao: BarcodeAliasDao,
+    private val prefs: SessionPrefs
 ) {
 
     /**
-     * The Excel file this app actually writes to. The file the user
+     * The two Excel files this app actually writes to. The file the user
      * originally picked is only ever read once, at import time — it is
-     * never opened for writing again. This working copy is (re)created the
-     * moment a new source file is loaded, and stays "the" file for as long
-     * as no different products file is loaded in its place. Living in the
-     * app's private storage means writing to it never needs a permission
-     * dialog, and it can only ever be updated from inside this app.
+     * never opened for writing again. These two working copies are (re)
+     * created the moment a new source file is loaded (see
+     * [WorkingFileNaming]), and their names are remembered in [prefs] so the
+     * very same two files keep being written to for as long as no different
+     * source file is loaded — including across the app being closed and
+     * reopened. Living in the app's private storage means writing to them
+     * never needs a permission dialog, and they can only ever be updated
+     * from inside this app.
      */
-    private val workingFile: File
-        get() = File(context.filesDir, "working_products.xlsx")
+    fun locationsQuantitiesFile(): File? = prefs.locationsQuantitiesFileName?.let { File(context.filesDir, it) }
 
-    /** Loads a new Excel file, replacing whatever was loaded before, and opens a fresh working copy for it. */
-    suspend fun loadFromExcel(uri: Uri): ExcelLoadResult {
+    fun multipleBarcodesFile(): File? = prefs.multipleBarcodesFileName?.let { File(context.filesDir, it) }
+
+    /**
+     * Loads a new Excel file, replacing whatever was loaded before, and
+     * immediately creates fresh working copies for it (see
+     * [createWorkingFiles]). [originalFileName] is the display name of the
+     * picked file (falls back to its last path segment, then a generic
+     * name) — it's what the two working files' names are derived from.
+     */
+    suspend fun loadFromExcel(uri: Uri, originalFileName: String? = null): ExcelLoadResult {
         val result = ExcelReader.readProducts(context, uri)
         dao.clearAll()
         dao.insertAll(result.products)
         aliasDao.clearAll()
         aliasDao.insertAll(result.barcodeAliases)
-        writeWorkingCopy()
+
+        val name = originalFileName ?: uri.lastPathSegment ?: DEFAULT_ORIGINAL_FILE_NAME
+        prefs.resetForNewFile(name, uri.toString())
+        createWorkingFiles(name)
         return result
+    }
+
+    /**
+     * (Re)establishes the two working files' names for [originalFileName]
+     * and writes both of them right away — used the moment a source file is
+     * (re)loaded. See [saveWorkingCopies] for just updating their content
+     * without renaming them.
+     */
+    suspend fun createWorkingFiles(originalFileName: String) {
+        val locationsName = WorkingFileNaming.buildFileName(originalFileName, WorkingFileNaming.Kind.LOCATIONS_QUANTITIES)
+        val barcodesName = WorkingFileNaming.buildFileName(originalFileName, WorkingFileNaming.Kind.MULTIPLE_BARCODES)
+        // Names are remembered before writing so a failed write still leaves
+        // the working files pointed at consistent, freshly-derived names
+        // rather than the previous source file's stale ones.
+        prefs.locationsQuantitiesFileName = locationsName
+        prefs.multipleBarcodesFileName = barcodesName
+        writeLocationsQuantitiesFile(locationsName)
+        writeMultipleBarcodesFile(barcodesName)
     }
 
     /**
@@ -252,18 +290,58 @@ class ProductRepository(
     }
 
     /**
-     * Writes the current data to the working copy. This is a deliberate,
-     * explicit action — nothing else in this class calls it — so a save
-     * only ever happens when the worker asks for it, typically once at the
-     * end of the whole process, never automatically after each scan.
+     * Writes the current data to both working files. This is what an
+     * explicit "שמור Excel" tap does, and — so newly-scanned data is never
+     * only in memory — what happens automatically right after the user
+     * confirms a shelf is done (see MainActivity's "סיים מיקום"). Throws
+     * [ExcelSaveException] if either file could not actually be written; the
+     * in-memory data is never affected by a failed save, and callers must
+     * not report success when this throws.
      */
-    suspend fun saveWorkingCopy() {
-        writeWorkingCopy()
+    suspend fun saveWorkingCopies() {
+        saveLocationsQuantitiesFile()
+        saveMultipleBarcodesFile()
     }
 
-    private suspend fun writeWorkingCopy() {
+    /** Writes just the locations/quantities file, e.g. to (re)create it on its own from the "create" button. */
+    suspend fun saveLocationsQuantitiesFile() {
+        val name = prefs.locationsQuantitiesFileName ?: freshFileName(WorkingFileNaming.Kind.LOCATIONS_QUANTITIES)
+            .also { prefs.locationsQuantitiesFileName = it }
+        writeLocationsQuantitiesFile(name)
+    }
+
+    /** Writes just the multiple-barcodes file, e.g. to (re)create it on its own from the "create" button. */
+    suspend fun saveMultipleBarcodesFile() {
+        val name = prefs.multipleBarcodesFileName ?: freshFileName(WorkingFileNaming.Kind.MULTIPLE_BARCODES)
+            .also { prefs.multipleBarcodesFileName = it }
+        writeMultipleBarcodesFile(name)
+    }
+
+    private fun freshFileName(kind: WorkingFileNaming.Kind): String =
+        WorkingFileNaming.buildFileName(prefs.fileName ?: DEFAULT_ORIGINAL_FILE_NAME, kind)
+
+    private suspend fun writeLocationsQuantitiesFile(fileName: String) {
         val all = dao.getAllOrdered()
+        val file = File(context.filesDir, fileName)
+        try {
+            FileOutputStream(file).use { ExcelWriter.writeLocationsQuantitiesToStream(it, all) }
+            Log.i(TAG, "Saved locations/quantities working file '$fileName' (${all.size} rows)")
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed saving locations/quantities working file '$fileName'", e)
+            throw ExcelSaveException("שמירת קובץ המיקומים והכמויות נכשלה: ${e.message}", e)
+        }
+    }
+
+    private suspend fun writeMultipleBarcodesFile(fileName: String) {
         val aliases = aliasDao.getAll()
-        FileOutputStream(workingFile).use { ExcelWriter.writeProductsToStream(it, all, aliases) }
+        val products = dao.getAllOrdered()
+        val file = File(context.filesDir, fileName)
+        try {
+            FileOutputStream(file).use { ExcelWriter.writeMultipleBarcodesToStream(it, aliases, products) }
+            Log.i(TAG, "Saved multiple-barcodes working file '$fileName' (${aliases.size} rows)")
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed saving multiple-barcodes working file '$fileName'", e)
+            throw ExcelSaveException("שמירת קובץ הברקודים המרובים נכשלה: ${e.message}", e)
+        }
     }
 }

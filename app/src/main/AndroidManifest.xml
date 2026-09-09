@@ -43,5 +43,18 @@
             android:name=".ExcelActionsActivity"
             android:exported="false" />
 
+        <!-- Lets the two working Excel files be shared/exported out of the
+             app's private storage (Drive, email, "Save to device", ...)
+             without requesting broad storage permissions. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 </manifest>

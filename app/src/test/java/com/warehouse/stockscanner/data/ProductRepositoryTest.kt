@@ -4,20 +4,24 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.warehouse.stockscanner.excel.ExcelReader
+import com.warehouse.stockscanner.excel.ExcelSaveException
 import com.warehouse.stockscanner.excel.ExcelWriter
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
 import java.io.FileOutputStream
+
+private const val LOCATIONS_QUANTITIES_SUFFIX = "original_locations_quantities.xlsx"
+private const val MULTIPLE_BARCODES_SUFFIX = "original_multiple_barcodes.xlsx"
 
 /**
  * Exercises the row-per-location contract from the spec directly against
@@ -33,13 +37,16 @@ class ProductRepositoryTest {
     private lateinit var db: AppDatabase
     private lateinit var repository: ProductRepository
 
+    private lateinit var prefs: SessionPrefs
+
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        repository = ProductRepository(context, db.productDao(), db.barcodeAliasDao())
+        prefs = SessionPrefs(context)
+        repository = ProductRepository(context, db.productDao(), db.barcodeAliasDao(), prefs)
     }
 
     /** Writes [products] (and optionally [aliases]) as a real .xlsx to a temp file, returning a Uri as if picked via SAF. */
@@ -49,7 +56,13 @@ class ProductRepositoryTest {
         return Uri.fromFile(file)
     }
 
-    private fun workingCopyFile() = File(context.filesDir, "working_products.xlsx")
+    /** The physical locations/quantities working file the repository is currently writing to — real bytes on disk. */
+    private fun locationsFile(): File = repository.locationsQuantitiesFile()
+        ?: error("locations/quantities working file was never created")
+
+    /** The physical multiple-barcodes working file the repository is currently writing to — real bytes on disk. */
+    private fun barcodesFile(): File = repository.multipleBarcodesFile()
+        ?: error("multiple-barcodes working file was never created")
 
     @After
     fun tearDown() {
@@ -260,42 +273,48 @@ class ProductRepositoryTest {
     }
 
     @Test
-    fun `loadFromExcel creates a private working copy immediately, separate from the source file`() = runBlocking {
+    fun `loadFromExcel creates both working files immediately, separate from the source file`() = runBlocking {
         val sourceUri = writeSourceFile(
             listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
         )
 
-        assertFalse("no working copy should exist before any file is loaded", workingCopyFile().exists())
+        assertNull("no working file should be remembered before any file is loaded", repository.locationsQuantitiesFile())
+        assertNull("no working file should be remembered before any file is loaded", repository.multipleBarcodesFile())
 
-        repository.loadFromExcel(sourceUri)
+        repository.loadFromExcel(sourceUri, "מלאי מרץ.xlsx")
 
-        assertTrue("loading a file must create the working copy right away", workingCopyFile().exists())
-        val workingCopyProducts = workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertTrue("loading a file must create the locations/quantities working file right away", locationsFile().exists())
+        assertTrue("loading a file must create the multiple-barcodes working file right away", barcodesFile().exists())
+        assertTrue(locationsFile().name.endsWith(LOCATIONS_QUANTITIES_SUFFIX))
+        assertTrue(barcodesFile().name.endsWith(MULTIPLE_BARCODES_SUFFIX))
+        assertTrue("the original source file's name must be embedded in the working file names", locationsFile().name.contains("מלאי_מרץ"))
+
+        val workingCopyProducts = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
         assertEquals(1, workingCopyProducts.size)
         assertEquals("ABC-123", workingCopyProducts.first().sku)
         assertEquals("A-01-05", workingCopyProducts.first().location)
     }
 
     @Test
-    fun `saveWorkingCopy is the only thing that writes to disk — updateProduct alone never does`() = runBlocking {
+    fun `saveWorkingCopies is the only thing that writes to disk — updateProduct alone never does`() = runBlocking {
         val sourceUri = writeSourceFile(
             listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
         )
         repository.loadFromExcel(sourceUri)
-        val snapshotAfterLoad = workingCopyFile().readBytes()
+        val snapshotAfterLoad = locationsFile().readBytes()
 
         // A confirmed scan updates the database immediately, but must NOT
-        // touch the working copy on disk by itself — only an explicit save
+        // touch the working files on disk by itself — only an explicit save
         // (see MainActivity/ExcelActionsActivity) does that.
         repository.updateProduct("ABC-123", "פילטר שמן טויוטה", "111", "B-02-01")
-        assertArrayEquals(snapshotAfterLoad, workingCopyFile().readBytes())
+        assertArrayEquals(snapshotAfterLoad, locationsFile().readBytes())
         val stillOnlyOneLocationOnDisk =
-            workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+            locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
         assertEquals(1, stillOnlyOneLocationOnDisk.size)
 
-        repository.saveWorkingCopy()
+        repository.saveWorkingCopies()
 
-        val afterSave = workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        val afterSave = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
         assertEquals(2, afterSave.size)
         assertEquals(setOf("A-01-05", "B-02-01"), afterSave.map { it.location }.toSet())
     }
@@ -375,15 +394,23 @@ class ProductRepositoryTest {
     }
 
     @Test
-    fun `saveWorkingCopy persists barcode aliases so they survive a reload`() = runBlocking {
+    fun `saveWorkingCopies writes barcode aliases to the multiple-barcodes file, alongside the sku's description`() = runBlocking {
         val sourceUri = writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)))
         repository.loadFromExcel(sourceUri)
 
         repository.updateProduct("ABC-123", "מוצר", "222", "A-01-05")
-        repository.saveWorkingCopy()
+        repository.saveWorkingCopies()
 
-        val reloaded = workingCopyFile().inputStream().use { ExcelReader.readProductsFromStream(it) }
-        assertEquals(listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123")), reloaded.barcodeAliases)
+        val reloaded = barcodesFile().inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
+        assertEquals(1, reloaded.size)
+        assertEquals("ABC-123", reloaded.first().sku)
+        assertEquals("מוצר", reloaded.first().description)
+        assertEquals("222", reloaded.first().barcode)
+
+        // The primary barcode itself is untouched, and stays in the
+        // locations/quantities file, not the aliases file.
+        val products = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals("111", products.single().barcode)
     }
 
     @Test
@@ -537,11 +564,11 @@ class ProductRepositoryTest {
             listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
         )
         repository.loadFromExcel(sourceUri)
-        val snapshotAfterLoad = workingCopyFile().readBytes()
+        val snapshotAfterLoad = locationsFile().readBytes()
 
         repository.removeFromLocation("ABC-123", "A-01-05")
 
-        assertArrayEquals(snapshotAfterLoad, workingCopyFile().readBytes())
+        assertArrayEquals(snapshotAfterLoad, locationsFile().readBytes())
         // The in-memory change did take effect — only the disk write is deferred.
         assertEquals("", db.productDao().findAllBySku("ABC-123").single().location)
     }
@@ -554,5 +581,108 @@ class ProductRepositoryTest {
         assertEquals(1, repository.count())
         assertNull(repository.findBySku("OLD"))
         assertEquals("new product", repository.findBySku("NEW")!!.description)
+    }
+
+    // --- Two separate working files (task spec sections 2-5) ---------------
+
+    @Test
+    fun `loading a source file creates two distinctly-named files, both valid and non-empty`() = runBlocking {
+        repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("A", "x", "", "A-01-01", 0))), "מלאי.xlsx")
+
+        assertTrue(locationsFile().exists())
+        assertTrue(barcodesFile().exists())
+        assertTrue("the two working files must never share a name", locationsFile().name != barcodesFile().name)
+        assertTrue(locationsFile().length() > 0)
+        assertTrue(barcodesFile().length() > 0)
+    }
+
+    @Test
+    fun `saveLocationsQuantitiesFile updates only that file, leaving the barcodes file untouched`() = runBlocking {
+        repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))))
+        val barcodesSnapshot = barcodesFile().readBytes()
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "B-02-01")
+        repository.saveLocationsQuantitiesFile()
+
+        val updated = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(2, updated.size)
+        assertArrayEquals("saving just the locations file must not rewrite the barcodes file", barcodesSnapshot, barcodesFile().readBytes())
+    }
+
+    @Test
+    fun `saveMultipleBarcodesFile updates only that file, leaving the locations file untouched`() = runBlocking {
+        repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))))
+        repository.updateProduct("ABC-123", "מוצר", "222", "A-01-05") // becomes an alias, in memory only so far
+        val locationsSnapshot = locationsFile().readBytes()
+
+        repository.saveMultipleBarcodesFile()
+
+        val aliases = barcodesFile().inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
+        assertEquals(listOf("222"), aliases.map { it.barcode })
+        assertArrayEquals("saving just the barcodes file must not rewrite the locations file", locationsSnapshot, locationsFile().readBytes())
+    }
+
+    @Test
+    fun `a save that cannot actually write to disk throws instead of silently succeeding`() = runBlocking {
+        repository.loadFromExcel(writeSourceFile(listOf(ProductEntity("A", "x", "", "A-01-01", 0))))
+        val target = locationsFile()
+        val snapshotBeforeFailure = target.readBytes()
+
+        // Replace the working file's path with a directory of the same name,
+        // so opening it for writing fails with a real IOException — simulates
+        // "the file is unavailable" from the task spec's error-handling requirement.
+        target.delete()
+        target.mkdirs()
+        try {
+            try {
+                repository.saveWorkingCopies()
+                fail("expected ExcelSaveException when the file cannot be written")
+            } catch (e: ExcelSaveException) {
+                // expected — the caller must not report success on this path.
+            }
+        } finally {
+            target.delete() // remove the directory so later assertions/teardown see a normal file path again
+            target.writeBytes(snapshotBeforeFailure) // restore, in case something else in this test method still reads it
+        }
+    }
+
+    // --- Surviving the app being closed and reopened (task spec section 3) ---
+
+    @Test
+    fun `a freshly-constructed repository (simulating an app restart) still knows which working files to keep using`() = runBlocking {
+        AppDatabase.resetForTests()
+        val realDb = AppDatabase.getInstance(context) // file-backed, unlike this test class's in-memory db
+        val realPrefs = SessionPrefs(context)
+        val firstRunRepository = ProductRepository(context, realDb.productDao(), realDb.barcodeAliasDao(), realPrefs)
+
+        firstRunRepository.loadFromExcel(writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))), "מלאי.xlsx")
+        firstRunRepository.updateProduct("ABC-123", "מוצר", "111", "B-02-01")
+        firstRunRepository.saveWorkingCopies()
+
+        val locationsNameBefore = realPrefs.locationsQuantitiesFileName
+        val barcodesNameBefore = realPrefs.multipleBarcodesFileName
+
+        // "Restart the app": drop the Room singleton and rebuild every
+        // wrapper object fresh — only what's actually persisted (the
+        // SharedPreferences file and the sqlite file) survives this.
+        AppDatabase.resetForTests()
+        val reopenedDb = AppDatabase.getInstance(context)
+        val reopenedPrefs = SessionPrefs(context)
+        val reopenedRepository = ProductRepository(context, reopenedDb.productDao(), reopenedDb.barcodeAliasDao(), reopenedPrefs)
+
+        assertEquals(locationsNameBefore, reopenedPrefs.locationsQuantitiesFileName)
+        assertEquals(barcodesNameBefore, reopenedPrefs.multipleBarcodesFileName)
+        assertEquals(2, reopenedRepository.count()) // both location rows survived, from the real sqlite file
+
+        // Scanning can continue right away, still writing to the very same files.
+        reopenedRepository.updateProduct("ABC-123", "מוצר", "111", "C-03-01")
+        reopenedRepository.saveWorkingCopies()
+
+        val finalProducts = reopenedRepository.locationsQuantitiesFile()!!
+            .inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(3, finalProducts.size)
+        assertEquals(locationsNameBefore, reopenedRepository.locationsQuantitiesFile()!!.name)
+
+        AppDatabase.resetForTests()
     }
 }

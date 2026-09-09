@@ -26,6 +26,9 @@ data class ExcelLoadResult(
     val barcodeAliases: List<BarcodeAliasEntity> = emptyList()
 )
 
+/** One row of the standalone "multiple barcodes" working file: a מקט, its description, and one extra ברקוד aliased to it. */
+data class BarcodeFileRow(val sku: String, val description: String, val barcode: String)
+
 /**
  * Minimal, dependency-free XLSX reader built directly on java.util.zip and
  * Android's built-in XmlPullParser. This avoids Apache POI, which has known
@@ -70,6 +73,45 @@ object ExcelReader {
      * fixtures produced by an independent tool).
      */
     fun readProductsFromStream(input: java.io.InputStream): ExcelLoadResult {
+        val (sharedStrings, sheets) = extractSheets(input)
+        val productResult = parseSheet(sheets.first(), sharedStrings)
+
+        // A second worksheet, if present, is only ever treated as the
+        // ברקודים כפולים sheet when its headers actually match — a random
+        // second sheet in a source file from elsewhere is otherwise ignored.
+        val aliases = sheets.getOrNull(1)?.let { parseAliasSheet(it, sharedStrings) } ?: emptyList()
+
+        return productResult.copy(barcodeAliases = aliases)
+    }
+
+    /**
+     * Reads a standalone "multiple barcodes" working file — the format
+     * [com.warehouse.stockscanner.excel.ExcelWriter.writeMultipleBarcodesToStream]
+     * produces: a single sheet with מקט, תיאור and ברקוד columns, one row per
+     * extra barcode aliased to a sku that already has its own primary one.
+     */
+    fun readMultipleBarcodesFromStream(input: java.io.InputStream): List<BarcodeFileRow> {
+        val (sharedStrings, sheets) = extractSheets(input)
+        val raw = parseRawSheet(sheets.first(), sharedStrings)
+        val headers = raw.headers ?: throw ExcelFormatException("הקובץ ריק או שאין בו שורת כותרות")
+        val skuCol = headers[COL_ALIAS_SKU] ?: throw ExcelFormatException("בקובץ חסרה העמודה: $COL_ALIAS_SKU")
+        val barcodeCol = headers[COL_ALIAS_BARCODE] ?: throw ExcelFormatException("בקובץ חסרה העמודה: $COL_ALIAS_BARCODE")
+        val descCol = headers[COL_DESCRIPTION]
+
+        // De-duplicated by barcode, last row wins — same spirit as the product sheet.
+        val byBarcode = LinkedHashMap<String, BarcodeFileRow>()
+        for (row in raw.dataRows) {
+            val barcode = row[barcodeCol]?.trim().orEmpty()
+            val sku = row[skuCol]?.trim().orEmpty()
+            if (barcode.isEmpty() || sku.isEmpty()) continue
+            val description = descCol?.let { row[it]?.trim() }.orEmpty()
+            byBarcode[barcode] = BarcodeFileRow(sku, description, barcode)
+        }
+        return byBarcode.values.toList()
+    }
+
+    /** Shared strings plus every worksheet's raw bytes, in sheet-number order. Shared by every public entry point above. */
+    private fun extractSheets(input: java.io.InputStream): Pair<List<String>, List<ByteArray>> {
         val entries = HashMap<String, ByteArray>()
 
         ZipInputStream(input).use { zip ->
@@ -104,19 +146,8 @@ object ExcelReader {
             .sortedBy { Regex("\\d+").find(it)?.value?.toIntOrNull() ?: Int.MAX_VALUE }
         if (sheetEntryNames.isEmpty()) throw ExcelFormatException("לא נמצא גיליון עבודה בקובץ")
 
-        val sheetBytes = entries[sheetEntryNames.first()]
-            ?: throw ExcelFormatException("לא נמצא גיליון עבודה בקובץ")
-        val productResult = parseSheet(sheetBytes, sharedStrings)
-
-        // A second worksheet, if present, is only ever treated as the
-        // ברקודים כפולים sheet when its headers actually match — a random
-        // second sheet in a source file from elsewhere is otherwise ignored.
-        val aliases = sheetEntryNames.getOrNull(1)
-            ?.let { entries[it] }
-            ?.let { parseAliasSheet(it, sharedStrings) }
-            ?: emptyList()
-
-        return productResult.copy(barcodeAliases = aliases)
+        val sheets = sheetEntryNames.map { entries.getValue(it) }
+        return sharedStrings to sheets
     }
 
     private fun parseSharedStrings(bytes: ByteArray): List<String> {
