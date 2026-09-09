@@ -91,6 +91,66 @@ class MainActivityTest {
         assertNull(prefs.currentLocation)
     }
 
+    /**
+     * Regression test for the reported bug: previously "סיים מיקום" only
+     * cleared the in-memory current-location flag — the newly-scanned data
+     * was never actually written to the physical Excel working file until
+     * the worker separately remembered to tap "שמור Excel". Confirming the
+     * shelf must now write it to disk right away.
+     */
+    @Test
+    fun `finishing the location physically writes the scanned data to the Excel working file`() {
+        val context = ApplicationProvider.getApplicationContext<StockScannerApp>()
+        val prefs = SessionPrefs(context)
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+            )
+        }
+        prefs.currentLocation = "A-01-05"
+
+        val activity = Robolectric.buildActivity(MainActivity::class.java).setup().get()
+        activity.findViewById<View>(R.id.btnFinishLocation).performClick()
+
+        awaitUntil { prefs.currentLocation == null }
+
+        val locationsFile = context.repository.locationsQuantitiesFile()
+        assertEquals(true, locationsFile != null && locationsFile.exists())
+        val savedProducts = locationsFile!!.inputStream()
+            .use { com.warehouse.stockscanner.excel.ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(1, savedProducts.size)
+        assertEquals("A-01-05", savedProducts.first().location)
+    }
+
+    @Test
+    fun `finishing the location keeps it active and reports an error if the physical save fails`() {
+        val context = ApplicationProvider.getApplicationContext<StockScannerApp>()
+        val prefs = SessionPrefs(context)
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+            )
+        }
+        prefs.currentLocation = "A-01-05"
+
+        // Force the write to fail: put a directory where the working file
+        // needs to go, exactly like the repository-level failure test.
+        runBlocking { context.repository.createWorkingFiles("products.xlsx") }
+        val target = context.repository.locationsQuantitiesFile()!!
+        target.delete()
+        target.mkdirs()
+        try {
+            val activity = Robolectric.buildActivity(MainActivity::class.java).setup().get()
+            activity.findViewById<View>(R.id.btnFinishLocation).performClick()
+
+            awaitUntil { ShadowDialog.getLatestDialog() != null }
+            // The location must NOT have been cleared — nothing was actually saved.
+            assertEquals("A-01-05", prefs.currentLocation)
+        } finally {
+            target.delete()
+        }
+    }
+
     @Test
     fun `returning to the screen after a location was set elsewhere hides the button on resume`() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()

@@ -16,6 +16,8 @@ import com.warehouse.stockscanner.data.ProductEntity
 import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import com.warehouse.stockscanner.data.SessionPrefs
+import com.warehouse.stockscanner.excel.ExcelSaveException
+import com.warehouse.stockscanner.util.showErrorDialog
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -137,10 +139,11 @@ class MainActivity : AppCompatActivity() {
 
         btnScanProduct.setOnClickListener { launchScanProduct() }
 
-        btnFinishLocation.setOnClickListener {
-            prefs.currentLocation = null
-            updateUiState()
-        }
+        // "סיים מיקום" is the shelf-save confirmation: it must physically
+        // write the newly-scanned data to the Excel working files before the
+        // location is considered done — not just leave it in the in-memory
+        // database — and must never tell the user it succeeded if it didn't.
+        btnFinishLocation.setOnClickListener { finishLocation() }
 
         updateUiState()
     }
@@ -190,6 +193,27 @@ class MainActivity : AppCompatActivity() {
             .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList(product.existingLocations))
             .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, currentLocation)
         productConfirmLauncher.launch(intent)
+    }
+
+    /**
+     * The shelf-save confirmation ("סיים מיקום"): writes everything scanned
+     * so far to the physical Excel working files, and only clears the
+     * active location — and only tells the user it's done — once that write
+     * actually succeeded. On failure the location stays active (nothing
+     * scanned is lost either way, since it's already in the database) so the
+     * worker can simply try again.
+     */
+    private fun finishLocation() {
+        lifecycleScope.launch {
+            try {
+                repository.saveWorkingCopies()
+                prefs.currentLocation = null
+                updateUiState()
+                Toast.makeText(this@MainActivity, "המדף נשמר בהצלחה בקובץ ה-Excel", Toast.LENGTH_SHORT).show()
+            } catch (e: ExcelSaveException) {
+                showErrorDialog("שמירת המדף נכשלה", (e.message ?: "שגיאה לא ידועה") + "\n\nהנתונים לא אבדו — ניתן לנסות שוב.")
+            }
+        }
     }
 
     /** Confirms, then undoes [product] having been added to the current location's shelf. */
