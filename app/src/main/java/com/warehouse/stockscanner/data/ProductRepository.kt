@@ -134,6 +134,13 @@ class ProductRepository(
      * brand-new row is opened for it (cloned from an existing row), so a
      * product can sit in more than one location at once without ever losing
      * an older one. Never creates a row for an unknown sku.
+     *
+     * Whichever row ends up at [newLocation] is also marked [ProductEntity.scanned]
+     * — this is the one and only place that happens, since this is the one
+     * function called for an actual in-app scan confirmation. That's what
+     * lets the locations/quantities working file stay a log of what was
+     * really scanned instead of a copy of the whole picked source file (see
+     * [saveLocationsQuantitiesFile]).
      */
     suspend fun updateProduct(sku: String, newDescription: String, newBarcode: String, newLocation: String) {
         val existingRows = dao.findAllBySku(sku)
@@ -160,7 +167,15 @@ class ProductRepository(
             }
         }
 
-        if (existingRows.any { it.location == trimmedLocation }) return
+        if (existingRows.any { it.location == trimmedLocation }) {
+            // The row for this location already existed (its description/
+            // barcode may just have been refreshed above) — re-read it fresh
+            // and make sure it's marked scanned, even if nothing else about
+            // it changed just now.
+            val row = dao.findBySkuAndLocation(sku, trimmedLocation) ?: return
+            if (!row.scanned) dao.update(row.copy(scanned = true))
+            return
+        }
 
         // A single row that has no location yet just gets this one filled
         // in, instead of being left behind as an orphaned blank row. The
@@ -169,7 +184,11 @@ class ProductRepository(
         val primaryBarcode = existingRows.first().barcode.let { if (it.isBlank()) trimmedBarcode else it }
         val blankRow = existingRows.singleOrNull { it.location.isBlank() }
         if (blankRow != null) {
-            dao.update(blankRow.copy(description = newDescription, barcode = primaryBarcode, location = trimmedLocation))
+            dao.update(
+                blankRow.copy(
+                    description = newDescription, barcode = primaryBarcode, location = trimmedLocation, scanned = true
+                )
+            )
             return
         }
 
@@ -181,6 +200,7 @@ class ProductRepository(
                 description = newDescription,
                 barcode = primaryBarcode,
                 location = trimmedLocation,
+                scanned = true,
                 rowOrder = nextOrder
             )
         )
@@ -258,7 +278,9 @@ class ProductRepository(
      * is its only row, the row is kept but cleared back to a blank location
      * (mirroring the blank row an import leaves for a not-yet-placed
      * product), so the sku/description/barcode aren't lost along with the
-     * shelf assignment. A no-op if [sku] has no row at [location].
+     * shelf assignment — and [ProductEntity.scanned] is cleared right along
+     * with it, since it's no longer a placed/counted row either. A no-op if
+     * [sku] has no row at [location].
      */
     suspend fun removeFromLocation(sku: String, location: String) {
         val trimmedLocation = location.trim()
@@ -274,7 +296,8 @@ class ProductRepository(
                     quantityType = ProductEntity.TYPE_UNITS,
                     packageContent = 0,
                     packageCount = 0,
-                    quantity = 0
+                    quantity = 0,
+                    scanned = false
                 )
             )
         }
@@ -305,7 +328,16 @@ class ProductRepository(
         saveMultipleBarcodesFile()
     }
 
-    /** Writes just the locations/quantities file, e.g. to (re)create it on its own from the "create" button. */
+    /**
+     * Writes just the locations/quantities file, e.g. to (re)create it on
+     * its own from the "create" button. Log-style, not a catalog copy: only
+     * rows an actual scan has confirmed ([ProductEntity.scanned], set by
+     * [updateProduct]) are written, so a product that merely came in on the
+     * originally-picked source file — even one that already listed a מיקום
+     * there — never shows up here until it's actually been scanned in this
+     * app. The Excel columns themselves are unchanged either way; only which
+     * rows qualify for a row at all.
+     */
     suspend fun saveLocationsQuantitiesFile() {
         val name = prefs.locationsQuantitiesFileName ?: freshFileName(WorkingFileNaming.Kind.LOCATIONS_QUANTITIES)
             .also { prefs.locationsQuantitiesFileName = it }
@@ -323,11 +355,11 @@ class ProductRepository(
         WorkingFileNaming.buildFileName(prefs.fileName ?: DEFAULT_ORIGINAL_FILE_NAME, kind)
 
     private suspend fun writeLocationsQuantitiesFile(fileName: String) {
-        val all = dao.getAllOrdered()
+        val scanned = dao.getScannedOrdered()
         val file = File(context.filesDir, fileName)
         try {
-            FileOutputStream(file).use { ExcelWriter.writeLocationsQuantitiesToStream(it, all) }
-            Log.i(TAG, "Saved locations/quantities working file '$fileName' (${all.size} rows)")
+            FileOutputStream(file).use { ExcelWriter.writeLocationsQuantitiesToStream(it, scanned) }
+            Log.i(TAG, "Saved locations/quantities working file '$fileName' (${scanned.size} rows)")
         } catch (e: IOException) {
             Log.e(TAG, "Failed saving locations/quantities working file '$fileName'", e)
             throw ExcelSaveException("שמירת קובץ המיקומים והכמויות נכשלה: ${e.message}", e)

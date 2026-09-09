@@ -103,8 +103,11 @@ class MainActivityTest {
         val context = ApplicationProvider.getApplicationContext<StockScannerApp>()
         val prefs = SessionPrefs(context)
         runBlocking {
+            // scanned = true: this row represents a product already
+            // confirmed via the scan flow, not just an unplaced catalog
+            // entry — only scanned rows are written to the working file.
             AppDatabase.getInstance(context).productDao().insertAll(
-                listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+                listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
             )
         }
         prefs.currentLocation = "A-01-05"

@@ -69,7 +69,7 @@ class InventoryActivityTest {
 
     @Test
     fun `opens in units mode by default with the package fields hidden`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -80,8 +80,8 @@ class InventoryActivityTest {
 
     @Test
     fun `saving a quantity in units mode stores it on that row only`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -100,7 +100,7 @@ class InventoryActivityTest {
 
     @Test
     fun `switching to package mode computes the total live and saves it`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -125,7 +125,7 @@ class InventoryActivityTest {
     @Test
     fun `re-opening for the same row prefills the previously saved package quantity`() {
         insertRow(
-            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60)
+            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60, scanned = true)
         )
 
         val activity = launch("ABC-123", "A-01-05")
@@ -139,7 +139,7 @@ class InventoryActivityTest {
 
     @Test
     fun `an invalid quantity warns instead of saving`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -157,7 +157,7 @@ class InventoryActivityTest {
 
     @Test
     fun `updateQuantity is scoped to this location, findRow for a different one stays null`() = runBlocking {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
         assertNull(context.repository.findRow("ABC-123", "NOWHERE"))
     }
 
@@ -171,7 +171,7 @@ class InventoryActivityTest {
      */
     @Test
     fun `saving a quantity physically writes it to the Excel working file right away`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
         runBlocking { context.repository.createWorkingFiles("products.xlsx") }
 
         val activity = launch("ABC-123", "A-01-05")
@@ -191,7 +191,7 @@ class InventoryActivityTest {
 
     @Test
     fun `a failed physical save reports an error and keeps the screen open`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
         runBlocking { context.repository.createWorkingFiles("products.xlsx") }
 
         // Force the write to fail: put a directory where the working file

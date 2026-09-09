@@ -10,7 +10,7 @@ import androidx.room.RoomDatabase
  * closed mid-scan: every confirmed product update is persisted here
  * immediately, so nothing is lost if the app is killed.
  */
-@Database(entities = [ProductEntity::class, BarcodeAliasEntity::class], version = 4, exportSchema = false)
+@Database(entities = [ProductEntity::class, BarcodeAliasEntity::class], version = 5, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun productDao(): ProductDao
     abstract fun barcodeAliasDao(): BarcodeAliasDao

@@ -127,6 +127,9 @@ class ExcelActionsActivityTest {
     @Test
     fun `saving after loading writes both working files and confirms success`() {
         loadSourceFile(listOf(ProductEntity("A", "מוצר א", "", "A-01-01", 0)))
+        // The locations/quantities file is a log of what's actually been
+        // scanned, not a copy of the picked source file — so scan it first.
+        runBlocking { context.repository.updateProduct("A", "מוצר א", "", "A-01-01") }
 
         val activity = Robolectric.buildActivity(ExcelActionsActivity::class.java).setup().get()
         ShadowToast.reset()
@@ -142,6 +145,25 @@ class ExcelActionsActivityTest {
         assertTrue(context.repository.multipleBarcodesFile()!!.exists())
     }
 
+    /**
+     * The source file merely listing a מיקום must not be enough on its own
+     * — the working file only ever reflects rows actually confirmed via an
+     * in-app scan (see [com.warehouse.stockscanner.data.ProductEntity.scanned]).
+     */
+    @Test
+    fun `saving right after loading, with nothing actually scanned yet, writes an empty log`() {
+        loadSourceFile(listOf(ProductEntity("A", "מוצר א", "", "A-01-01", 0)))
+
+        val activity = Robolectric.buildActivity(ExcelActionsActivity::class.java).setup().get()
+        ShadowToast.reset()
+        activity.findViewById<Button>(R.id.btnSaveExcel).performClick()
+
+        awaitUntil { ShadowToast.getTextOfLatestToast() != null }
+        val locationsFile = context.repository.locationsQuantitiesFile()!!
+        val products = locationsFile.inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertTrue("nothing was scanned, so the saved file must have no product rows", products.isEmpty())
+    }
+
     @Test
     fun `create-locations-file button re-derives just that file when a source is already loaded`() {
         loadSourceFile(listOf(ProductEntity("A", "מוצר א", "111", "A-01-01", 0)))
@@ -152,9 +174,12 @@ class ExcelActionsActivityTest {
         activity.findViewById<Button>(R.id.btnCreateLocationsFile).performClick()
 
         awaitUntil { ShadowToast.getTextOfLatestToast() != null }
+        // Only the newly-scanned B-02-01 row shows up — A-01-01 came only
+        // from the source file and was never itself (re)scanned.
         val products = context.repository.locationsQuantitiesFile()!!
             .inputStream().use { ExcelReader.readProductsFromStream(it) }.products
-        assertEquals(2, products.size) // the second location was picked up by the re-save
+        assertEquals(1, products.size)
+        assertEquals("B-02-01", products.single().location)
     }
 
     @Test

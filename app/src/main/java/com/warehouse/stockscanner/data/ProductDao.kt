@@ -33,6 +33,10 @@ interface ProductDao {
     @Query("SELECT * FROM products ORDER BY rowOrder ASC")
     suspend fun getAllOrdered(): List<ProductEntity>
 
+    /** Only rows an actual in-app scan has confirmed — what the locations/quantities working file is written from. */
+    @Query("SELECT * FROM products WHERE scanned = 1 ORDER BY rowOrder ASC")
+    suspend fun getScannedOrdered(): List<ProductEntity>
+
     @Query("SELECT * FROM products")
     suspend fun getAllForSearch(): List<ProductEntity>
 

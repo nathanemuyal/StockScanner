@@ -288,11 +288,38 @@ class ProductRepositoryTest {
         assertTrue(locationsFile().name.endsWith(LOCATIONS_QUANTITIES_SUFFIX))
         assertTrue(barcodesFile().name.endsWith(MULTIPLE_BARCODES_SUFFIX))
         assertTrue("the original source file's name must be embedded in the working file names", locationsFile().name.contains("מלאי_מרץ"))
+    }
 
+    /**
+     * The core "log, not a copy" contract: the source file the user picks
+     * can already list a מיקום for a product (e.g. from a previous count) —
+     * that must NOT make it show up in the locations/quantities working file
+     * on its own. Only an actual in-app scan (updateProduct) does that, even
+     * for the very same (sku, location) the source file already had.
+     */
+    @Test
+    fun `loading a source file whose rows already list a מיקום does not copy them into the working file`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05", 0))
+        )
+
+        repository.loadFromExcel(sourceUri)
+
+        // The product itself is known (so scanning it still works)...
+        assertEquals(1, repository.count())
+        assertEquals(listOf("A-01-05"), repository.findBySku("ABC-123")!!.existingLocations)
+        // ...but nothing has actually been scanned yet, so the working file
+        // that's meant to log real scans starts empty.
         val workingCopyProducts = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
-        assertEquals(1, workingCopyProducts.size)
-        assertEquals("ABC-123", workingCopyProducts.first().sku)
-        assertEquals("A-01-05", workingCopyProducts.first().location)
+        assertTrue("nothing was scanned yet, so the working file must have no product rows", workingCopyProducts.isEmpty())
+
+        // Actually scanning it — even at the exact location the source file
+        // already listed — is what makes it appear.
+        repository.updateProduct("ABC-123", "פילטר שמן טויוטה", "111", "A-01-05")
+        repository.saveWorkingCopies()
+        val afterScan = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
+        assertEquals(1, afterScan.size)
+        assertEquals("A-01-05", afterScan.first().location)
     }
 
     @Test
@@ -308,15 +335,18 @@ class ProductRepositoryTest {
         // (see MainActivity/ExcelActionsActivity) does that.
         repository.updateProduct("ABC-123", "פילטר שמן טויוטה", "111", "B-02-01")
         assertArrayEquals(snapshotAfterLoad, locationsFile().readBytes())
-        val stillOnlyOneLocationOnDisk =
+        val stillNothingOnDisk =
             locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
-        assertEquals(1, stillOnlyOneLocationOnDisk.size)
+        assertTrue(stillNothingOnDisk.isEmpty())
 
         repository.saveWorkingCopies()
 
+        // Only the row that was actually scanned (B-02-01) is written — the
+        // pre-existing, never-rescanned A-01-05 row from the source file
+        // stays out of the log.
         val afterSave = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
-        assertEquals(2, afterSave.size)
-        assertEquals(setOf("A-01-05", "B-02-01"), afterSave.map { it.location }.toSet())
+        assertEquals(1, afterSave.size)
+        assertEquals(setOf("B-02-01"), afterSave.map { it.location }.toSet())
     }
 
     @Test
@@ -604,8 +634,11 @@ class ProductRepositoryTest {
         repository.updateProduct("ABC-123", "מוצר", "111", "B-02-01")
         repository.saveLocationsQuantitiesFile()
 
+        // Only the newly-scanned B-02-01 row is written — the source file's
+        // own A-01-05 row was never actually (re)scanned in this app.
         val updated = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products
-        assertEquals(2, updated.size)
+        assertEquals(1, updated.size)
+        assertEquals("B-02-01", updated.single().location)
         assertArrayEquals("saving just the locations file must not rewrite the barcodes file", barcodesSnapshot, barcodesFile().readBytes())
     }
 
@@ -678,9 +711,13 @@ class ProductRepositoryTest {
         reopenedRepository.updateProduct("ABC-123", "מוצר", "111", "C-03-01")
         reopenedRepository.saveWorkingCopies()
 
+        // Only the two rows actually scanned across both "runs" (B-02-01 then
+        // C-03-01) are in the log — the source file's own A-01-05 row was
+        // never itself rescanned.
         val finalProducts = reopenedRepository.locationsQuantitiesFile()!!
             .inputStream().use { ExcelReader.readProductsFromStream(it) }.products
-        assertEquals(3, finalProducts.size)
+        assertEquals(2, finalProducts.size)
+        assertEquals(setOf("B-02-01", "C-03-01"), finalProducts.map { it.location }.toSet())
         assertEquals(locationsNameBefore, reopenedRepository.locationsQuantitiesFile()!!.name)
 
         AppDatabase.resetForTests()
