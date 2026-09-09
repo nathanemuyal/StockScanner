@@ -196,12 +196,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * The shelf-save confirmation ("סיים מיקום"): writes everything scanned
-     * so far to the physical Excel working files, and only clears the
-     * active location — and only tells the user it's done — once that write
-     * actually succeeded. On failure the location stays active (nothing
-     * scanned is lost either way, since it's already in the database) so the
-     * worker can simply try again.
+     * The shelf-save confirmation ("סיים מיקום"). Every individual scan
+     * already gets physically saved on its own the moment its quantity is
+     * recorded (see InventoryActivity) — this is a final safety-net write of
+     * everything scanned so far, and only clears the active location — and
+     * only tells the user it's done — once that write actually succeeded. On
+     * failure the location stays active (nothing scanned is lost either way,
+     * since it's already in the database) so the worker can simply try again.
      */
     private fun finishLocation() {
         lifecycleScope.launch {

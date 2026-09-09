@@ -160,4 +160,61 @@ class InventoryActivityTest {
         insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
         assertNull(context.repository.findRow("ABC-123", "NOWHERE"))
     }
+
+    /**
+     * Regression coverage for "scan by scan" saving: a worker must not have
+     * to reach "סיים מיקום" for a row they just scanned to actually be on
+     * disk — every confirmed quantity is meant to be written to the physical
+     * Excel working file right away, since the same מקט can have several
+     * rows (one per location, or per barcode) that each need their own
+     * quantity recorded independently.
+     */
+    @Test
+    fun `saving a quantity physically writes it to the Excel working file right away`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        runBlocking { context.repository.createWorkingFiles("products.xlsx") }
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<EditText>(R.id.etQuantity).setText("15")
+        activity.findViewById<Button>(R.id.btnSaveInventory).performClick()
+        awaitUntil { activity.isFinishing }
+
+        val locationsFile = context.repository.locationsQuantitiesFile()
+        assertEquals(true, locationsFile != null && locationsFile.exists())
+        val savedProducts = locationsFile!!.inputStream()
+            .use { com.warehouse.stockscanner.excel.ExcelReader.readProductsFromStream(it) }.products
+        val savedRow = savedProducts.first { it.location == "A-01-05" }
+        assertEquals(15, savedRow.quantity)
+    }
+
+    @Test
+    fun `a failed physical save reports an error and keeps the screen open`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        runBlocking { context.repository.createWorkingFiles("products.xlsx") }
+
+        // Force the write to fail: put a directory where the working file
+        // needs to go, exactly like the MainActivity/repository-level tests do.
+        val target = context.repository.locationsQuantitiesFile()!!
+        target.delete()
+        target.mkdirs()
+        try {
+            val activity = launch("ABC-123", "A-01-05")
+            awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+            activity.findViewById<EditText>(R.id.etQuantity).setText("15")
+            activity.findViewById<Button>(R.id.btnSaveInventory).performClick()
+
+            awaitUntil { org.robolectric.shadows.ShadowDialog.getLatestDialog() != null }
+            assertEquals(false, activity.isFinishing)
+
+            // The quantity is still safe in the database even though the
+            // physical write failed.
+            val row = runBlocking { AppDatabase.getInstance(context).productDao().findAllBySku("ABC-123") }.single()
+            assertEquals(15, row.quantity)
+        } finally {
+            target.delete()
+        }
+    }
 }

@@ -291,12 +291,14 @@ class ProductRepository(
 
     /**
      * Writes the current data to both working files. This is what an
-     * explicit "שמור Excel" tap does, and — so newly-scanned data is never
-     * only in memory — what happens automatically right after the user
-     * confirms a shelf is done (see MainActivity's "סיים מיקום"). Throws
-     * [ExcelSaveException] if either file could not actually be written; the
-     * in-memory data is never affected by a failed save, and callers must
-     * not report success when this throws.
+     * explicit "שמור Excel" tap does; what happens automatically right after
+     * every single scan's quantity is recorded (see InventoryActivity's
+     * "שמור והמשך" — scan-by-scan saving, so a row is never left only in
+     * memory even for a moment longer than it has to be); and, as a safety
+     * net, what "סיים מיקום" also does when a shelf is confirmed done (see
+     * MainActivity). Throws [ExcelSaveException] if either file could not
+     * actually be written; the in-memory data is never affected by a failed
+     * save, and callers must not report success when this throws.
      */
     suspend fun saveWorkingCopies() {
         saveLocationsQuantitiesFile()

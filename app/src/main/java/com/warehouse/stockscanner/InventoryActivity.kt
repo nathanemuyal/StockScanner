@@ -14,6 +14,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.warehouse.stockscanner.data.ProductEntity
 import com.warehouse.stockscanner.data.ProductRepository
+import com.warehouse.stockscanner.excel.ExcelSaveException
+import com.warehouse.stockscanner.util.showErrorDialog
 import kotlinx.coroutines.launch
 
 /**
@@ -22,7 +24,14 @@ import kotlinx.coroutines.launch
  * product. Records how much stock sits at that (sku, location) row: either
  * a straight unit count, or a package breakdown (units per package × number
  * of packages), which is converted to a unit count automatically. Nothing
- * is saved until "שמור והמשך" is tapped.
+ * is saved until "שמור והמשך" is tapped — and that tap physically writes
+ * the row to the Excel working files right away (scan-by-scan), not just to
+ * the in-memory database: a sku can have several rows (one per location, or
+ * even one per barcode sharing a location — see [ProductEntity]), so every
+ * individual scan+quantity needs to land in the file on its own rather than
+ * waiting for the whole shelf to be finished. Screen stays open and reports
+ * the failure if that physical write fails, mirroring "סיים מיקום" in
+ * MainActivity, so nothing is ever reported saved when it wasn't.
  */
 class InventoryActivity : AppCompatActivity() {
 
@@ -121,11 +130,25 @@ class InventoryActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Records the quantity, then immediately writes it to the physical Excel
+     * working files — this is the "scan by scan" save: the worker must not
+     * have to reach "סיים מיקום" (or the separate "שמור Excel" screen) for a
+     * row they just scanned to actually be on disk. On a failed write the
+     * quantity stays recorded in the database (nothing scanned is lost) but
+     * the screen stays open and reports the error, so success is never
+     * claimed for a row that isn't really saved yet.
+     */
     private fun saveAndFinish(quantityType: String, packageContent: Int, packageCount: Int, quantity: Int) {
         lifecycleScope.launch {
             repository.updateQuantity(sku, location, quantityType, packageContent, packageCount, quantity)
-            setResult(RESULT_OK)
-            finish()
+            try {
+                repository.saveWorkingCopies()
+                setResult(RESULT_OK)
+                finish()
+            } catch (e: ExcelSaveException) {
+                showErrorDialog("שמירת השורה נכשלה", (e.message ?: "שגיאה לא ידועה") + "\n\nהנתונים לא אבדו — ניתן לנסות שוב.")
+            }
         }
     }
 }
