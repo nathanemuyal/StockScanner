@@ -25,8 +25,8 @@ import org.robolectric.shadows.ShadowToast
 /**
  * The inventory screen shown right after a product is confirmed: it must
  * record either a direct unit count or a package breakdown (auto-computing
- * the resulting unit total), scoped to exactly the (sku, location) row it
- * was opened for.
+ * the resulting unit total), scoped to exactly the (sku, location, barcode)
+ * row it was opened for.
  */
 @RunWith(RobolectricTestRunner::class)
 class InventoryActivityTest {
@@ -60,16 +60,17 @@ class InventoryActivityTest {
         runBlocking { AppDatabase.getInstance(context).productDao().insertAll(listOf(row)) }
     }
 
-    private fun launch(sku: String, location: String): InventoryActivity {
+    private fun launch(sku: String, location: String, barcode: String = "111"): InventoryActivity {
         val intent = Intent(context, InventoryActivity::class.java)
             .putExtra(InventoryActivity.EXTRA_SKU, sku)
             .putExtra(InventoryActivity.EXTRA_LOCATION, location)
+            .putExtra(InventoryActivity.EXTRA_BARCODE, barcode)
         return Robolectric.buildActivity(InventoryActivity::class.java, intent).setup().get()
     }
 
     @Test
     fun `opens in units mode by default with the package fields hidden`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -80,8 +81,8 @@ class InventoryActivityTest {
 
     @Test
     fun `saving a quantity in units mode stores it on that row only`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -100,7 +101,7 @@ class InventoryActivityTest {
 
     @Test
     fun `switching to package mode computes the total live and saves it`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -125,7 +126,7 @@ class InventoryActivityTest {
     @Test
     fun `re-opening for the same row prefills the previously saved package quantity`() {
         insertRow(
-            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60)
+            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60, scanned = true)
         )
 
         val activity = launch("ABC-123", "A-01-05")
@@ -139,7 +140,7 @@ class InventoryActivityTest {
 
     @Test
     fun `an invalid quantity warns instead of saving`() {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
 
         val activity = launch("ABC-123", "A-01-05")
         awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
@@ -157,7 +158,64 @@ class InventoryActivityTest {
 
     @Test
     fun `updateQuantity is scoped to this location, findRow for a different one stays null`() = runBlocking {
-        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
-        assertNull(context.repository.findRow("ABC-123", "NOWHERE"))
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+        assertNull(context.repository.findRow("ABC-123", "NOWHERE", "111"))
+    }
+
+    /**
+     * Regression coverage for "scan by scan" saving: a worker must not have
+     * to reach "סיים מיקום" for a row they just scanned to actually be on
+     * disk — every confirmed quantity is meant to be written to the physical
+     * Excel working file right away, since the same מקט can have several
+     * rows (one per location, or per barcode) that each need their own
+     * quantity recorded independently.
+     */
+    @Test
+    fun `saving a quantity physically writes it to the Excel working file right away`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+        runBlocking { context.repository.createWorkingFiles("products.xlsx") }
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<EditText>(R.id.etQuantity).setText("15")
+        activity.findViewById<Button>(R.id.btnSaveInventory).performClick()
+        awaitUntil { activity.isFinishing }
+
+        val locationsFile = context.repository.locationsQuantitiesFile()
+        assertEquals(true, locationsFile != null && locationsFile.exists())
+        val savedProducts = locationsFile!!.inputStream()
+            .use { com.warehouse.stockscanner.excel.ExcelReader.readProductsFromStream(it) }.products
+        val savedRow = savedProducts.first { it.location == "A-01-05" }
+        assertEquals(15, savedRow.quantity)
+    }
+
+    @Test
+    fun `a failed physical save reports an error and keeps the screen open`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+        runBlocking { context.repository.createWorkingFiles("products.xlsx") }
+
+        // Force the write to fail: put a directory where the working file
+        // needs to go, exactly like the MainActivity/repository-level tests do.
+        val target = context.repository.locationsQuantitiesFile()!!
+        target.delete()
+        target.mkdirs()
+        try {
+            val activity = launch("ABC-123", "A-01-05")
+            awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+            activity.findViewById<EditText>(R.id.etQuantity).setText("15")
+            activity.findViewById<Button>(R.id.btnSaveInventory).performClick()
+
+            awaitUntil { org.robolectric.shadows.ShadowDialog.getLatestDialog() != null }
+            assertEquals(false, activity.isFinishing)
+
+            // The quantity is still safe in the database even though the
+            // physical write failed.
+            val row = runBlocking { AppDatabase.getInstance(context).productDao().findAllBySku("ABC-123") }.single()
+            assertEquals(15, row.quantity)
+        } finally {
+            target.delete()
+        }
     }
 }

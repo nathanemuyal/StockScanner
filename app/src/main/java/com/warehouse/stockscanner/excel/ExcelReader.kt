@@ -341,21 +341,21 @@ object ExcelReader {
             }
         }
 
-        // De-duplicate by (sku, location) deterministically: if the exact same
-        // product/location pair appears more than once, the LAST row in the
-        // file wins (matches how a re-export would behave), while the file
-        // order otherwise decides row-write-back order.
-        val bySkuAndLocation = LinkedHashMap<Pair<String, String>, RawTuple>()
+        // De-duplicate by (sku, location, barcode) deterministically — that
+        // triple is a row's real identity (see ProductEntity): if it repeats
+        // in the file, the LAST row wins (matches how a re-export would
+        // behave), while the file order otherwise decides row-write-back order.
+        val bySkuLocationAndBarcode = LinkedHashMap<Triple<String, String, String>, RawTuple>()
         for (t in rawTuples) {
-            bySkuAndLocation[t.sku to t.location] = t
+            bySkuLocationAndBarcode[Triple(t.sku, t.location, t.barcode)] = t
         }
-        val products = bySkuAndLocation.values.mapIndexed { index, t ->
+        val products = bySkuLocationAndBarcode.values.mapIndexed { index, t ->
             ProductEntity(
                 t.sku, t.description, t.barcode, t.location, index,
                 t.quantityType, t.packageContent, t.packageCount, t.quantity
             )
         }
-        val duplicateRows = rawTuples.size - bySkuAndLocation.size
+        val duplicateRows = rawTuples.size - bySkuLocationAndBarcode.size
 
         // A barcode collision only matters between two DIFFERENT products —
         // the same sku legitimately repeats its barcode across its own

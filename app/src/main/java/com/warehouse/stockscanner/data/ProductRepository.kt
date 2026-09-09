@@ -122,54 +122,69 @@ class ProductRepository(
 
     /**
      * Applies a confirmed scan. The product's description is kept in sync
-     * across every location it already has — it's the same product wherever
-     * it sits. The barcode, however, is only ever ADDED to, never
-     * overwritten: a still-blank primary ברקוד gets set from [newBarcode],
-     * but once a sku already has one, a *different* [newBarcode] (e.g. the
-     * product was found via description search after an unrecognized scan)
-     * is recorded as an extra alias for [sku] instead of replacing it — so
-     * either barcode keeps resolving to the same product afterwards. The
-     * location itself is also only ever ADDED to: if [sku] already has a row
-     * at [newLocation], that row is refreshed in place; otherwise a
-     * brand-new row is opened for it (cloned from an existing row), so a
-     * product can sit in more than one location at once without ever losing
-     * an older one. Never creates a row for an unknown sku.
+     * across every row it already has — it's the same product wherever it
+     * sits. The (location, barcode) *pair* is only ever ADDED to, never
+     * merged or overwritten: if [sku] already has a row at exactly
+     * [newLocation] with exactly [newBarcode], that row is simply
+     * re-confirmed in place; a not-yet-placed row whose barcode is either
+     * unknown or already matches this scan just gets its location filled in
+     * (so shelving a product whose barcode was already on file doesn't
+     * spawn a duplicate); anything else — a genuinely new location, a
+     * different barcode scanned at a location [sku] already has, even a
+     * second distinct barcode scanned again at the very same spot — opens a
+     * brand-new row (cloned from an existing one), so nothing already
+     * recorded is ever lost or silently merged away. Never creates a row for
+     * an unknown sku.
+     *
+     * The row this ends up touching is also marked [ProductEntity.scanned]
+     * — this is the one and only place that happens, since this is the one
+     * function called for an actual in-app scan confirmation. That's what
+     * lets the locations/quantities working file stay a log of what was
+     * really scanned instead of a copy of the whole picked source file (see
+     * [saveLocationsQuantitiesFile]).
      */
     suspend fun updateProduct(sku: String, newDescription: String, newBarcode: String, newLocation: String) {
-        val existingRows = dao.findAllBySku(sku)
-        if (existingRows.isEmpty()) return
+        val rowsBeforeSync = dao.findAllBySku(sku)
+        if (rowsBeforeSync.isEmpty()) return
         val trimmedLocation = newLocation.trim()
         val trimmedBarcode = newBarcode.trim()
 
-        for (row in existingRows) {
+        // Kept in sync with the DB writes below it, not just the DB itself —
+        // every subsequent .copy() in this function starts from a row here,
+        // so a stale (pre-sync) description can never get written back out
+        // by a later step that only meant to touch some other field.
+        val existingRows = rowsBeforeSync.map { row ->
             if (row.description != newDescription) {
-                dao.update(row.copy(description = newDescription))
-            }
+                val synced = row.copy(description = newDescription)
+                dao.update(synced)
+                synced
+            } else row
         }
 
-        if (trimmedBarcode.isNotEmpty()) {
-            val currentPrimary = existingRows.first().barcode
-            if (currentPrimary.isBlank()) {
-                // No primary ברקוד yet for this sku — this is the first one, so
-                // it becomes the primary on every row, same as before.
-                for (row in existingRows) {
-                    if (row.barcode != trimmedBarcode) dao.update(row.copy(barcode = trimmedBarcode))
-                }
-            } else if (currentPrimary != trimmedBarcode) {
-                aliasDao.insert(BarcodeAliasEntity(barcode = trimmedBarcode, sku = sku))
-            }
+        val exactMatch = existingRows.firstOrNull { it.location == trimmedLocation && it.barcode == trimmedBarcode }
+        if (exactMatch != null) {
+            // This exact (location, barcode) combination was already on
+            // record — this scan simply re-confirms it, so it must be marked
+            // scanned even if nothing else about it changed just now.
+            if (!exactMatch.scanned) dao.update(exactMatch.copy(scanned = true))
+            return
         }
 
-        if (existingRows.any { it.location == trimmedLocation }) return
-
-        // A single row that has no location yet just gets this one filled
-        // in, instead of being left behind as an orphaned blank row. The
-        // primary barcode (not necessarily newBarcode — see above) is what
-        // every row for this sku carries, this one included.
-        val primaryBarcode = existingRows.first().barcode.let { if (it.isBlank()) trimmedBarcode else it }
-        val blankRow = existingRows.singleOrNull { it.location.isBlank() }
+        // A single not-yet-placed row (no location yet) whose barcode either
+        // isn't known yet or already matches this scan just gets the
+        // location filled in, instead of being left behind as an orphaned
+        // blank row alongside a new one this scan would otherwise create —
+        // covers both a genuinely fresh catalog entry (blank barcode too)
+        // and a product whose barcode was already known but never shelved.
+        val blankRow = existingRows.singleOrNull {
+            it.location.isBlank() && (it.barcode.isBlank() || it.barcode == trimmedBarcode)
+        }
         if (blankRow != null) {
-            dao.update(blankRow.copy(description = newDescription, barcode = primaryBarcode, location = trimmedLocation))
+            dao.update(
+                blankRow.copy(
+                    description = newDescription, barcode = trimmedBarcode, location = trimmedLocation, scanned = true
+                )
+            )
             return
         }
 
@@ -179,68 +194,65 @@ class ProductRepository(
             template.copy(
                 id = 0,
                 description = newDescription,
-                barcode = primaryBarcode,
+                barcode = trimmedBarcode,
                 location = trimmedLocation,
+                scanned = true,
                 rowOrder = nextOrder
             )
         )
     }
 
     /**
-     * Fixes a mistaken barcode-to-מקט link: [barcode] is detached from
-     * whatever product it currently resolves to (as either a primary ברקוד
-     * or an alias — see [BarcodeAliasEntity]) and reattached to [newSku]
-     * instead, the same way a fresh scan would attach it (primary if [newSku]
-     * has none yet, otherwise an alias). Used from the confirm screen when
-     * the user notices a scan matched the wrong product and picks the right
-     * one. A no-op if [newSku] has no rows to attach to.
+     * Fixes a mistaken barcode-to-מקט link: the row currently carrying
+     * [barcode] (wherever it sits) is moved to belong to [newSku] instead —
+     * its own location stays the same — it just moves under [newSku]
+     * instead. Built out of the exact same two operations a worker could do
+     * by hand ([removeFromLocation] the wrong row, [updateProduct] the right
+     * sku at that same location+barcode), so it behaves identically: the
+     * wrong sku's row is deleted if it has other rows, or cleared in place
+     * (not lost) if this was its only one; the right sku gets a proper new
+     * row for this (location, barcode) — or re-confirms an existing one, if
+     * for some reason it already had this exact combination. Used from the
+     * confirm screen when the user notices a scan matched the wrong product
+     * and picks the right one. A no-op if [newSku] has no rows at all, if
+     * nothing currently carries [barcode], or if it already belongs to
+     * [newSku].
      */
     suspend fun reassignBarcode(barcode: String, newSku: String) {
         val trimmed = barcode.trim()
         if (trimmed.isEmpty()) return
 
-        // Checked before anything is detached below, so an unknown newSku
-        // leaves the barcode's existing link untouched instead of orphaning it.
         val newRows = dao.findAllBySku(newSku)
         if (newRows.isEmpty()) return
 
-        val currentOwner = dao.findByBarcode(trimmed)
-        if (currentOwner != null && currentOwner.sku != newSku) {
-            for (row in dao.findAllBySku(currentOwner.sku)) {
-                if (row.barcode == trimmed) dao.update(row.copy(barcode = ""))
-            }
-        }
-        aliasDao.deleteByBarcode(trimmed)
+        val wrongRow = dao.findByBarcode(trimmed) ?: return
+        if (wrongRow.sku == newSku) return
 
-        val newPrimary = newRows.first().barcode
-        if (newPrimary.isBlank()) {
-            for (row in newRows) {
-                if (row.barcode != trimmed) dao.update(row.copy(barcode = trimmed))
-            }
-        } else if (newPrimary != trimmed) {
-            aliasDao.insert(BarcodeAliasEntity(barcode = trimmed, sku = newSku))
-        }
+        val newDescription = newRows.first().description
+        removeFromLocation(wrongRow)
+        updateProduct(newSku, newDescription, trimmed, wrongRow.location)
     }
 
-    /** The exact row for [sku] at [location] — used by the inventory screen to prefill an existing quantity. */
-    suspend fun findRow(sku: String, location: String): ProductEntity? =
-        dao.findBySkuAndLocation(sku, location.trim())
+    /** The exact row for [sku] at [location] with [barcode] — used by the inventory screen to prefill an existing quantity. */
+    suspend fun findRow(sku: String, location: String, barcode: String): ProductEntity? =
+        dao.findBySkuLocationAndBarcode(sku, location.trim(), barcode.trim())
 
     /**
-     * Records the stock quantity for [sku] at [location] (that row only —
-     * quantity is per location, like everything else on a row). Never
-     * creates a row: the location must already have been confirmed via
-     * [updateProduct] first.
+     * Records the stock quantity for [sku] at [location] with [barcode]
+     * (that row only — quantity is per row, like everything else on it).
+     * Never creates a row: the (location, barcode) combination must already
+     * have been confirmed via [updateProduct] first.
      */
     suspend fun updateQuantity(
         sku: String,
         location: String,
+        barcode: String,
         quantityType: String,
         packageContent: Int,
         packageCount: Int,
         quantity: Int
     ) {
-        val row = dao.findBySkuAndLocation(sku, location.trim()) ?: return
+        val row = dao.findBySkuLocationAndBarcode(sku, location.trim(), barcode.trim()) ?: return
         dao.update(
             row.copy(
                 quantityType = quantityType,
@@ -252,29 +264,32 @@ class ProductRepository(
     }
 
     /**
-     * Undoes a product having been added to [location] — the counterpart to
-     * the ADD-only location handling in [updateProduct]. If [sku] has other
-     * location rows too, the row for [location] is simply deleted. If this
-     * is its only row, the row is kept but cleared back to a blank location
-     * (mirroring the blank row an import leaves for a not-yet-placed
-     * product), so the sku/description/barcode aren't lost along with the
-     * shelf assignment. A no-op if [sku] has no row at [location].
+     * Undoes [row] having been added to its location — the counterpart to
+     * the ADD-only handling in [updateProduct]. [row] is the exact row to
+     * remove (a sku can have several rows at the very same location, one per
+     * distinct barcode, so the row itself — not just sku+location — is what
+     * identifies it unambiguously). If [row]'s sku has other rows too, this
+     * one is simply deleted. If it's the sku's only row, it's kept but
+     * cleared back to a blank, unplaced entry (mirroring the blank row an
+     * import leaves for a not-yet-placed product), so the sku/description
+     * aren't lost along with the shelf assignment — and
+     * [ProductEntity.scanned] is cleared right along with it, since it's no
+     * longer a placed/counted row either.
      */
-    suspend fun removeFromLocation(sku: String, location: String) {
-        val trimmedLocation = location.trim()
-        val row = dao.findBySkuAndLocation(sku, trimmedLocation) ?: return
-
-        val otherRows = dao.findAllBySku(sku).any { it.id != row.id }
+    suspend fun removeFromLocation(row: ProductEntity) {
+        val otherRows = dao.findAllBySku(row.sku).any { it.id != row.id }
         if (otherRows) {
             dao.delete(row)
         } else {
             dao.update(
                 row.copy(
                     location = "",
+                    barcode = "",
                     quantityType = ProductEntity.TYPE_UNITS,
                     packageContent = 0,
                     packageCount = 0,
-                    quantity = 0
+                    quantity = 0,
+                    scanned = false
                 )
             )
         }
@@ -291,19 +306,30 @@ class ProductRepository(
 
     /**
      * Writes the current data to both working files. This is what an
-     * explicit "שמור Excel" tap does, and — so newly-scanned data is never
-     * only in memory — what happens automatically right after the user
-     * confirms a shelf is done (see MainActivity's "סיים מיקום"). Throws
-     * [ExcelSaveException] if either file could not actually be written; the
-     * in-memory data is never affected by a failed save, and callers must
-     * not report success when this throws.
+     * explicit "שמור Excel" tap does; what happens automatically right after
+     * every single scan's quantity is recorded (see InventoryActivity's
+     * "שמור והמשך" — scan-by-scan saving, so a row is never left only in
+     * memory even for a moment longer than it has to be); and, as a safety
+     * net, what "סיים מיקום" also does when a shelf is confirmed done (see
+     * MainActivity). Throws [ExcelSaveException] if either file could not
+     * actually be written; the in-memory data is never affected by a failed
+     * save, and callers must not report success when this throws.
      */
     suspend fun saveWorkingCopies() {
         saveLocationsQuantitiesFile()
         saveMultipleBarcodesFile()
     }
 
-    /** Writes just the locations/quantities file, e.g. to (re)create it on its own from the "create" button. */
+    /**
+     * Writes just the locations/quantities file, e.g. to (re)create it on
+     * its own from the "create" button. Log-style, not a catalog copy: only
+     * rows an actual scan has confirmed ([ProductEntity.scanned], set by
+     * [updateProduct]) are written, so a product that merely came in on the
+     * originally-picked source file — even one that already listed a מיקום
+     * there — never shows up here until it's actually been scanned in this
+     * app. The Excel columns themselves are unchanged either way; only which
+     * rows qualify for a row at all.
+     */
     suspend fun saveLocationsQuantitiesFile() {
         val name = prefs.locationsQuantitiesFileName ?: freshFileName(WorkingFileNaming.Kind.LOCATIONS_QUANTITIES)
             .also { prefs.locationsQuantitiesFileName = it }
@@ -321,11 +347,11 @@ class ProductRepository(
         WorkingFileNaming.buildFileName(prefs.fileName ?: DEFAULT_ORIGINAL_FILE_NAME, kind)
 
     private suspend fun writeLocationsQuantitiesFile(fileName: String) {
-        val all = dao.getAllOrdered()
+        val scanned = dao.getScannedOrdered()
         val file = File(context.filesDir, fileName)
         try {
-            FileOutputStream(file).use { ExcelWriter.writeLocationsQuantitiesToStream(it, all) }
-            Log.i(TAG, "Saved locations/quantities working file '$fileName' (${all.size} rows)")
+            FileOutputStream(file).use { ExcelWriter.writeLocationsQuantitiesToStream(it, scanned) }
+            Log.i(TAG, "Saved locations/quantities working file '$fileName' (${scanned.size} rows)")
         } catch (e: IOException) {
             Log.e(TAG, "Failed saving locations/quantities working file '$fileName'", e)
             throw ExcelSaveException("שמירת קובץ המיקומים והכמויות נכשלה: ${e.message}", e)

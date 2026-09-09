@@ -30,6 +30,17 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:textSize="16sp" />
+
+            <!-- Only shown when this list has more than one row for the same
+                 מקט at the same מיקום (different ברקוד each) — otherwise the
+                 barcode is redundant clutter, so it stays hidden. -->
+            <TextView
+                android:id="@+id/tvItemBarcode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:textColor="@color/color_text_secondary"
+                android:visibility="gone" />
         </LinearLayout>
 
         <!-- Only shown where the adapter is given a removal action (the
