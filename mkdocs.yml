@@ -7,6 +7,8 @@ theme:
   name: material
   language: he
   direction: rtl
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   palette:
     - scheme: default
       primary: indigo
