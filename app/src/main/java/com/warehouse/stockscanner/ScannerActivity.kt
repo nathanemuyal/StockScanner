@@ -1,9 +1,14 @@
 package com.warehouse.stockscanner
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Size
 import android.widget.Button
 import android.widget.TextView
@@ -11,6 +16,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
@@ -47,9 +53,12 @@ class ScannerActivity : AppCompatActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var tvHint: TextView
     private lateinit var tvLocationBadge: TextView
+    private lateinit var btnTorch: Button
     private lateinit var cameraExecutor: ExecutorService
     private val handled = AtomicBoolean(false)
     private var mode: String = MODE_PRODUCT
+    private var camera: Camera? = null
+    private var torchOn = false
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -71,9 +80,16 @@ class ScannerActivity : AppCompatActivity() {
         previewView = findViewById(R.id.previewView)
         tvHint = findViewById(R.id.tvHint)
         tvLocationBadge = findViewById(R.id.tvLocationBadge)
+        btnTorch = findViewById(R.id.btnTorch)
         findViewById<Button>(R.id.btnCancelScan).setOnClickListener {
             setResult(RESULT_CANCELED)
             finish()
+        }
+        btnTorch.setOnClickListener {
+            val cam = camera ?: return@setOnClickListener
+            torchOn = !torchOn
+            cam.cameraControl.enableTorch(torchOn)
+            btnTorch.text = if (torchOn) "🔦 כבה פנס" else "🔦 הדלק פנס"
         }
 
         tvHint.text = if (mode == MODE_LOCATION) "סרוק את ה-QR של המדף" else "סרוק ברקוד מוצר"
@@ -146,12 +162,16 @@ class ScannerActivity : AppCompatActivity() {
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                camera = cameraProvider.bindToLifecycle(
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     analysis
                 )
+                // Not every device has a flash unit — only offer the toggle
+                // when one actually exists.
+                btnTorch.visibility =
+                    if (camera?.cameraInfo?.hasFlashUnit() == true) android.view.View.VISIBLE else android.view.View.GONE
             } catch (e: Exception) {
                 Toast.makeText(this, "שגיאה בפתיחת המצלמה: ${e.message}", Toast.LENGTH_LONG).show()
                 finish()
@@ -186,9 +206,30 @@ class ScannerActivity : AppCompatActivity() {
 
     private fun onScanned(value: String) {
         runOnUiThread {
+            vibrateOnScan()
             val result = Intent().putExtra(EXTRA_VALUE, value)
             setResult(RESULT_OK, result)
             finish()
+        }
+    }
+
+    /**
+     * Short confirmation buzz so a worker who scans without staring at the
+     * screen every time still gets immediate feedback that the scan landed.
+     */
+    private fun vibrateOnScan() {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+        if (vibrator?.hasVibrator() != true) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(50)
         }
     }
 

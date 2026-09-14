@@ -49,4 +49,16 @@
         android:layout_margin="24dp"
         android:text="ביטול" />
 
+    <!-- Torch toggle for dim shelving aisles. Hidden until the camera
+         confirms the device actually has a flash unit (see startCamera()),
+         and positioned clear of the cancel button below it. -->
+    <Button
+        android:id="@+id/btnTorch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="24dp"
+        android:text="🔦 הדלק פנס"
+        android:visibility="gone" />
+
 </FrameLayout>
