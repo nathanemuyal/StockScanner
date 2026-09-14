@@ -51,6 +51,7 @@ class ScannerActivity : AppCompatActivity() {
         const val MODE_PRODUCT = "PRODUCT"
         const val EXTRA_VALUE = "value"
         const val EXTRA_CURRENT_LOCATION = "current_location"
+        private const val SCAN_BUZZ_MS = 50L
     }
 
     private lateinit var previewView: PreviewView
@@ -246,27 +247,25 @@ class ScannerActivity : AppCompatActivity() {
         // toggle in Settings, so a worker who turned that off system-wide
         // won't feel this buzz — a deliberate respecting of that setting,
         // not a bug.
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                val vibrationAttributes = VibrationAttributes.Builder()
-                    .setUsage(VibrationAttributes.USAGE_TOUCH)
-                    .build()
-                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE), vibrationAttributes)
-            }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
-                val audioAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                    .build()
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE), audioAttributes)
-            }
-            else -> {
-                val audioAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                    .build()
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(50, audioAttributes)
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val vibrationAttributes = VibrationAttributes.Builder()
+                .setUsage(VibrationAttributes.USAGE_TOUCH)
+                .build()
+            vibrator.vibrate(VibrationEffect.createOneShot(SCAN_BUZZ_MS, VibrationEffect.DEFAULT_AMPLITUDE), vibrationAttributes)
+            return
+        }
+        // Below API 33, AudioAttributes is the closest equivalent to
+        // VibrationAttributes — shared between both legacy overloads so the
+        // buzz duration and usage tag can't drift apart between them.
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(VibrationEffect.createOneShot(SCAN_BUZZ_MS, VibrationEffect.DEFAULT_AMPLITUDE), audioAttributes)
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(SCAN_BUZZ_MS, audioAttributes)
         }
     }
 

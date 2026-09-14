@@ -62,9 +62,9 @@ Matrix במסך הזה — כדי שברקוד מוצר שנקלט באותו פ
   <div class="mock-badge">תרשים סכמטי — לא צילום מסך אמיתי</div>
   <div class="mock-camera">📷 תצוגת מצלמה חיה</div>
   <div class="mock-hint">סרוק את ה-QR של המדף</div>
-  <div class="mock-body" style="text-align:center">
-    <span class="mock-btn outline" style="display:inline-block;width:auto;padding:.5rem 2rem">🔦 הדלק פנס</span>
-    <span class="mock-btn outline" style="display:inline-block;width:auto;padding:.5rem 2rem">ביטול</span>
+  <div class="mock-body">
+    <span class="mock-btn outline" style="width:fit-content;margin:.5rem auto;padding:.5rem 2rem">🔦 הדלק פנס</span>
+    <span class="mock-btn outline" style="width:fit-content;margin:.5rem auto;padding:.5rem 2rem">ביטול</span>
   </div>
 </div>
 
