@@ -11,3 +11,6 @@ local.properties
 *.apk
 .kotlin/
 .claude/
+
+# MkDocs documentation site (generated, local-only)
+/site/

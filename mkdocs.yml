@@ -1,0 +1,63 @@
+site_name: Stock Scanner — תיעוד מלא
+site_description: תיעוד טכני ומדריך שימוש לאפליקציית Stock Scanner (BarcodeShorting)
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: he
+  direction: rtl
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: מעבר למצב כהה
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: מעבר למצב בהיר
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.integrate
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: "#"
+      title: בעמוד זה
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - attr_list
+  - md_in_html
+  - footnotes
+
+nav:
+  - סקירה כללית: index.md
+  - ארכיטקטורה: architecture.md
+  - מדריך שימוש (עם צילומי מסך): user-guide.md
+  - התנהגות האפליקציה לכל פעולה: behavior.md
+  - שימוש נכון ומגבלות: correct-usage.md
+  - זכויות יוצרים ואחריות שימוש: legal.md
+
+extra:
+  generator: false

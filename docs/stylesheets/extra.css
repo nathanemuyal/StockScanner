@@ -1,0 +1,141 @@
+/* RTL polish */
+.md-content, .md-sidebar, .md-typeset {
+  direction: rtl;
+}
+.md-typeset table:not([class]) {
+  direction: rtl;
+}
+
+/* Real device screenshot */
+.screenshot {
+  display: block;
+  max-width: 320px;
+  margin: 1rem auto;
+  border: 8px solid #1a1a1a;
+  border-radius: 28px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.25);
+}
+.screenshot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  justify-content: center;
+  align-items: flex-start;
+  margin: 1rem 0;
+}
+.screenshot-row figure {
+  margin: 0;
+  text-align: center;
+  max-width: 320px;
+}
+.screenshot-row figcaption {
+  font-size: .8rem;
+  color: var(--md-default-fg-color--light);
+  margin-top: .4rem;
+}
+
+/* Schematic (non-photo) phone mockup for screens we have no camera screenshot of */
+.mock-phone {
+  max-width: 300px;
+  margin: 1rem auto;
+  border: 3px dashed #90a4ae;
+  border-radius: 22px;
+  padding: 0;
+  overflow: hidden;
+  background: #eef1f4;
+  font-family: system-ui, sans-serif;
+  direction: rtl;
+  box-shadow: 0 4px 14px rgba(0,0,0,.12);
+}
+.mock-phone .mock-badge {
+  background: #ffe082;
+  color: #5d4a00;
+  font-size: .65rem;
+  text-align: center;
+  padding: 3px 0;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.mock-phone .mock-topbar {
+  background: #1565c0;
+  color: #fff;
+  padding: .5rem .8rem;
+  font-weight: 700;
+  font-size: .8rem;
+  text-align: center;
+}
+.mock-phone .mock-body {
+  padding: .9rem;
+  font-size: .82rem;
+  color: #263238;
+}
+.mock-phone .mock-hint {
+  background: rgba(0,0,0,.55);
+  color: #fff;
+  text-align: center;
+  padding: .6rem;
+  font-weight: 700;
+  font-size: .78rem;
+}
+.mock-phone .mock-btn {
+  display: block;
+  background: #1565c0;
+  color: #fff;
+  text-align: center;
+  border-radius: 6px;
+  padding: .55rem;
+  margin: .5rem 0;
+  font-weight: 700;
+  font-size: .8rem;
+}
+.mock-phone .mock-btn.outline {
+  background: transparent;
+  color: #1565c0;
+  border: 1.5px solid #1565c0;
+}
+.mock-phone .mock-btn.danger {
+  background: #c62828;
+}
+.mock-phone .mock-field {
+  border: 1px solid #b0bec5;
+  border-radius: 6px;
+  background: #fff;
+  padding: .5rem;
+  margin: .3rem 0 .7rem 0;
+  font-size: .8rem;
+  color: #37474f;
+}
+.mock-phone .mock-label {
+  font-weight: 700;
+  font-size: .75rem;
+  color: #37474f;
+  margin-top: .5rem;
+}
+.mock-phone .mock-row {
+  display: flex;
+  gap: .5rem;
+}
+.mock-phone .mock-row > * { flex: 1; }
+.mock-phone .mock-camera {
+  background: repeating-linear-gradient(45deg,#263238,#263238 10px,#2e3b41 10px,#2e3b41 20px);
+  height: 170px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #cfd8dc;
+  font-size: .75rem;
+}
+.mock-phone figcaption,
+figure.mock-figure figcaption {
+  text-align: center;
+  font-size: .78rem;
+  color: var(--md-default-fg-color--light);
+  margin-top: .3rem;
+}
+
+/* Behavior/response tables: keep the first ("action") column readable and un-wrapped */
+.md-typeset table:not([class]) td:first-child,
+.md-typeset table:not([class]) th:first-child {
+  font-weight: 600;
+  white-space: nowrap;
+}
