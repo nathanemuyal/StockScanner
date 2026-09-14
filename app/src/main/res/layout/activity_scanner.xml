@@ -41,12 +41,36 @@
 
     </LinearLayout>
 
-    <Button
-        android:id="@+id/btnCancelScan"
+    <!-- Both buttons centered and stacked vertically (rather than side by
+         side) so neither can ever overlap the other regardless of button
+         width — e.g. "🔦 כבה פנס" growing under a larger system font size —
+         and without relying on start/end gravity, which would otherwise flip
+         with the device's layout direction while these Hebrew labels stay
+         fixed either way. -->
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
-        android:layout_margin="24dp"
-        android:text="ביטול" />
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:layout_margin="24dp">
+
+        <!-- Torch toggle for dim shelving aisles. Hidden until the camera
+             confirms the device actually has a flash unit (see startCamera()). -->
+        <Button
+            android:id="@+id/btnTorch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="🔦 הדלק פנס"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnCancelScan"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ביטול" />
+
+    </LinearLayout>
 
 </FrameLayout>

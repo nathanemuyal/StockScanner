@@ -1,9 +1,16 @@
 package com.warehouse.stockscanner
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.os.Build
 import android.os.Bundle
+import android.os.VibrationAttributes
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Size
 import android.widget.Button
 import android.widget.TextView
@@ -11,11 +18,13 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.TorchState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -42,14 +51,17 @@ class ScannerActivity : AppCompatActivity() {
         const val MODE_PRODUCT = "PRODUCT"
         const val EXTRA_VALUE = "value"
         const val EXTRA_CURRENT_LOCATION = "current_location"
+        private const val SCAN_BUZZ_MS = 50L
     }
 
     private lateinit var previewView: PreviewView
     private lateinit var tvHint: TextView
     private lateinit var tvLocationBadge: TextView
+    private lateinit var btnTorch: Button
     private lateinit var cameraExecutor: ExecutorService
     private val handled = AtomicBoolean(false)
     private var mode: String = MODE_PRODUCT
+    private var camera: Camera? = null
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -71,9 +83,14 @@ class ScannerActivity : AppCompatActivity() {
         previewView = findViewById(R.id.previewView)
         tvHint = findViewById(R.id.tvHint)
         tvLocationBadge = findViewById(R.id.tvLocationBadge)
+        btnTorch = findViewById(R.id.btnTorch)
         findViewById<Button>(R.id.btnCancelScan).setOnClickListener {
             setResult(RESULT_CANCELED)
             finish()
+        }
+        btnTorch.setOnClickListener {
+            val cam = camera ?: return@setOnClickListener
+            cam.cameraControl.enableTorch(cam.cameraInfo.torchState.value != TorchState.ON)
         }
 
         tvHint.text = if (mode == MODE_LOCATION) "סרוק את ה-QR של המדף" else "סרוק ברקוד מוצר"
@@ -146,12 +163,30 @@ class ScannerActivity : AppCompatActivity() {
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                camera = cameraProvider.bindToLifecycle(
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     analysis
                 )
+                // Not every device has a flash unit — only offer the toggle
+                // when one actually exists.
+                val cameraInfo = camera?.cameraInfo
+                if (cameraInfo?.hasFlashUnit() == true) {
+                    btnTorch.visibility = android.view.View.VISIBLE
+                    // Drives the button's label from CameraX's own torch
+                    // state instead of separate local state: a backgrounded
+                    // ON_STOP (incoming call, screen lock, Home) makes
+                    // CameraX turn the torch off and reset this LiveData on
+                    // its own when the screen is rebound, so the label stays
+                    // correct for free instead of going stale at "כבה פנס"
+                    // while the torch is actually already off.
+                    cameraInfo.torchState.observe(this) { state ->
+                        btnTorch.text = if (state == TorchState.ON) "🔦 כבה פנס" else "🔦 הדלק פנס"
+                    }
+                } else {
+                    btnTorch.visibility = android.view.View.GONE
+                }
             } catch (e: Exception) {
                 Toast.makeText(this, "שגיאה בפתיחת המצלמה: ${e.message}", Toast.LENGTH_LONG).show()
                 finish()
@@ -186,9 +221,51 @@ class ScannerActivity : AppCompatActivity() {
 
     private fun onScanned(value: String) {
         runOnUiThread {
+            vibrateOnScan()
             val result = Intent().putExtra(EXTRA_VALUE, value)
             setResult(RESULT_OK, result)
             finish()
+        }
+    }
+
+    /**
+     * Short confirmation buzz so a worker who scans without staring at the
+     * screen every time still gets immediate feedback that the scan landed.
+     */
+    private fun vibrateOnScan() {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+        if (vibrator?.hasVibrator() != true) return
+        // Tagged as touch feedback (not e.g. usage "notification") so the
+        // system is less likely to silence it under Do Not Disturb or a
+        // quiet sound profile. Not a guarantee either way: on API 33+ this
+        // usage is also the one gated by the device's own "touch feedback"
+        // toggle in Settings, so a worker who turned that off system-wide
+        // won't feel this buzz — a deliberate respecting of that setting,
+        // not a bug.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val vibrationAttributes = VibrationAttributes.Builder()
+                .setUsage(VibrationAttributes.USAGE_TOUCH)
+                .build()
+            vibrator.vibrate(VibrationEffect.createOneShot(SCAN_BUZZ_MS, VibrationEffect.DEFAULT_AMPLITUDE), vibrationAttributes)
+            return
+        }
+        // Below API 33, AudioAttributes is the closest equivalent to
+        // VibrationAttributes — shared between both legacy overloads so the
+        // buzz duration and usage tag can't drift apart between them.
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(VibrationEffect.createOneShot(SCAN_BUZZ_MS, VibrationEffect.DEFAULT_AMPLITUDE), audioAttributes)
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(SCAN_BUZZ_MS, audioAttributes)
         }
     }
 
