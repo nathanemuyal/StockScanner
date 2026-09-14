@@ -63,9 +63,13 @@ Matrix במסך הזה — כדי שברקוד מוצר שנקלט באותו פ
   <div class="mock-camera">📷 תצוגת מצלמה חיה</div>
   <div class="mock-hint">סרוק את ה-QR של המדף</div>
   <div class="mock-body" style="text-align:center">
+    <span class="mock-btn outline" style="display:inline-block;width:auto;padding:.5rem 2rem">🔦 הדלק פנס</span>
     <span class="mock-btn outline" style="display:inline-block;width:auto;padding:.5rem 2rem">ביטול</span>
   </div>
 </div>
+
+כפתור הפנס מוצג רק במכשירים שיש להם פלאש, ונעלם אוטומטית אם אין. עם זיהוי מוצלח של קוד, המכשיר
+גם רוטט לרגע — אישור שלא תלוי במבט במסך.
 
 לאחר סריקה מוצלחת, מסך הבית מציג את המיקום הנוכחי, וכעת מופיעים כפתורי **"סרוק מוצר"** ו**"סיים
 מיקום"**.
@@ -81,6 +85,9 @@ Matrix במסך הזה — כדי שברקוד מוצר שנקלט באותו פ
   <div class="mock-hint">סרוק ברקוד מוצר</div>
   <div style="background:#ffe082;color:#5d4a00;text-align:center;padding:.5rem;font-weight:700;font-size:.78rem">📍 מיקום נוכחי: Z-09-09</div>
 </div>
+
+זהו אותו מסך סריקה כמו בשלב הקודם — כפתור הפנס (אם יש למכשיר) והרטט על זיהוי מוצלח זמינים כאן
+בדיוק כמו בסריקת המיקום.
 
 ### א. אם הברקוד נמצא בקטלוג → מסך אישור
 

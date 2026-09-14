@@ -237,6 +237,14 @@ Room (SQLite) על פני שמירה רק בזיכרון היא הסיבה **ש�
   `UPC-A`, `UPC-E`, `Code 128`, `Code 39`.
 - הסריקה משתמשת ב־`AtomicBoolean` כדי לוודא שרק תוצאה **אחת** מטופלת גם אם כמה פריימים נסרקים
   כמעט בו־זמנית.
+- אותו `Camera` שמתקבל מ־`bindToLifecycle()` (session ה־CameraX היחיד של המסך) משמש גם לפנס:
+  `cameraInfo.hasFlashUnit()` קובע אם כפתור הפנס מוצג בכלל, ו־`cameraControl.enableTorch()`
+  מדליק/מכבה אותו — בלי session נפרד ובלי הרשאה נוספת. הכפתור לא מחזיק מצב "דלוק/כבוי" משלו;
+  הטקסט שלו נגזר תמיד מ־`cameraInfo.torchState` (LiveData), כדי להישאר נכון גם כש־CameraX מאפס
+  את הפנס לבד עם `ON_STOP` (שיחה נכנסת, נעילת מסך) ולא רק דרך לחיצה על הכפתור.
+- זיהוי מוצלח (בכל מצב) מפעיל רטט קצר (50ms) דרך `Vibrator`/`VibratorManager`, עם usage מסומן
+  כמשוב מגע (`VibrationAttributes.USAGE_TOUCH` מ־API 33, `AudioAttributes.USAGE_ASSISTANCE_SONIFICATION`
+  לפני זה) — כדי שעובד שסורק בלי להביט במסך בכל פעם יקבל אישור לא-ויזואלי מיידי.
 
 ## טיפול בשגיאות — עיקרון מרכזי
 

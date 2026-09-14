@@ -241,8 +241,11 @@ class ScannerActivity : AppCompatActivity() {
         if (vibrator?.hasVibrator() != true) return
         // Tagged as touch feedback (not e.g. usage "notification") so the
         // system is less likely to silence it under Do Not Disturb or a
-        // quiet sound profile — exactly when a worker who put the phone on
-        // silent still wants the scan buzz to work.
+        // quiet sound profile. Not a guarantee either way: on API 33+ this
+        // usage is also the one gated by the device's own "touch feedback"
+        // toggle in Settings, so a worker who turned that off system-wide
+        // won't feel this buzz — a deliberate respecting of that setting,
+        // not a bug.
         when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
                 val vibrationAttributes = VibrationAttributes.Builder()
