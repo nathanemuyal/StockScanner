@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.os.Build
 import android.os.Bundle
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -22,6 +24,7 @@ import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.TorchState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -58,7 +61,6 @@ class ScannerActivity : AppCompatActivity() {
     private val handled = AtomicBoolean(false)
     private var mode: String = MODE_PRODUCT
     private var camera: Camera? = null
-    private var torchOn = false
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -87,9 +89,7 @@ class ScannerActivity : AppCompatActivity() {
         }
         btnTorch.setOnClickListener {
             val cam = camera ?: return@setOnClickListener
-            torchOn = !torchOn
-            cam.cameraControl.enableTorch(torchOn)
-            btnTorch.text = if (torchOn) "🔦 כבה פנס" else "🔦 הדלק פנס"
+            cam.cameraControl.enableTorch(cam.cameraInfo.torchState.value != TorchState.ON)
         }
 
         tvHint.text = if (mode == MODE_LOCATION) "סרוק את ה-QR של המדף" else "סרוק ברקוד מוצר"
@@ -170,8 +170,22 @@ class ScannerActivity : AppCompatActivity() {
                 )
                 // Not every device has a flash unit — only offer the toggle
                 // when one actually exists.
-                btnTorch.visibility =
-                    if (camera?.cameraInfo?.hasFlashUnit() == true) android.view.View.VISIBLE else android.view.View.GONE
+                val cameraInfo = camera?.cameraInfo
+                if (cameraInfo?.hasFlashUnit() == true) {
+                    btnTorch.visibility = android.view.View.VISIBLE
+                    // Drives the button's label from CameraX's own torch
+                    // state instead of separate local state: a backgrounded
+                    // ON_STOP (incoming call, screen lock, Home) makes
+                    // CameraX turn the torch off and reset this LiveData on
+                    // its own when the screen is rebound, so the label stays
+                    // correct for free instead of going stale at "כבה פנס"
+                    // while the torch is actually already off.
+                    cameraInfo.torchState.observe(this) { state ->
+                        btnTorch.text = if (state == TorchState.ON) "🔦 כבה פנס" else "🔦 הדלק פנס"
+                    }
+                } else {
+                    btnTorch.visibility = android.view.View.GONE
+                }
             } catch (e: Exception) {
                 Toast.makeText(this, "שגיאה בפתיחת המצלמה: ${e.message}", Toast.LENGTH_LONG).show()
                 finish()
@@ -225,11 +239,31 @@ class ScannerActivity : AppCompatActivity() {
             getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         }
         if (vibrator?.hasVibrator() != true) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator.vibrate(50)
+        // Tagged as touch feedback (not e.g. usage "notification") so the
+        // system is less likely to silence it under Do Not Disturb or a
+        // quiet sound profile — exactly when a worker who put the phone on
+        // silent still wants the scan buzz to work.
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                val vibrationAttributes = VibrationAttributes.Builder()
+                    .setUsage(VibrationAttributes.USAGE_TOUCH)
+                    .build()
+                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE), vibrationAttributes)
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
+                val audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .build()
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE), audioAttributes)
+            }
+            else -> {
+                val audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .build()
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(50, audioAttributes)
+            }
         }
     }
 
