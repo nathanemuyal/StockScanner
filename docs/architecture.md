@@ -115,8 +115,25 @@ flowchart TD
 | קובץ | מי כותב אליו | מתי נוצר/נכתב |
 |---|---|---|
 | **קובץ המקור** שהמשתמש בוחר (`בחר קובץ Excel מקורי`) | נקרא **פעם אחת בלבד**, לעולם לא נכתב עליו שוב | בבחירה דרך בורר קבצים (SAF) |
-| **קובץ מיקומים וכמויות** (`..._original_locations_quantities.xlsx`) | `ExcelWriter.writeLocationsQuantitiesToStream` | בכל סריקה+כמות שאושרה, וכ"רשת ביטחון" ב"סיים מיקום"/"שמור Excel" |
-| **קובץ ברקודים מרובים** (`..._original_multiple_barcodes.xlsx`) | `ExcelWriter.writeMultipleBarcodesToStream` | בטעינת קובץ מקור, וב"שמור Excel" |
+| **קובץ מיקומים וכמויות** (`..._original_locations_quantities.xlsx`) | `ExcelWriter.writeLocationsQuantitiesToStream` | ראו למטה — נכתב **תמיד יחד** עם קובץ הברקודים המרובים |
+| **קובץ ברקודים מרובים** (`..._original_multiple_barcodes.xlsx`) | `ExcelWriter.writeMultipleBarcodesToStream` | ראו למטה — נכתב **תמיד יחד** עם קובץ המיקומים והכמויות |
+
+`ProductRepository.saveWorkingCopies()` כותב **שני הקבצים יחד, תמיד** — אין מצב שרק אחד מהם
+מתעדכן:
+
+```kotlin
+suspend fun saveWorkingCopies() {
+    saveLocationsQuantitiesFile()
+    saveMultipleBarcodesFile()
+}
+```
+
+והיא נקראת משלוש נקודות כניסה: **בכל סריקה שאושרה** (`InventoryActivity.saveAndFinish()`),
+**ב"סיים מיקום"** (`MainActivity.finishLocation()`), ו**ב"שמור Excel"**
+(`ExcelActionsActivity.saveExcel()`) — וכן, בנפרד, בטעינת קובץ מקור חדש
+(`ProductRepository.createWorkingFiles()` קוראת לשתי הפונקציות המפורדות ישירות). הכפתורים
+"צור/עדכן קובץ מיקומים וכמויות" ו"צור/עדכן קובץ ברקודים מרובים" הם היחידים שכותבים **רק** קובץ
+אחד בכוונה — ראו [הטבלה בהמשך](#excel-actions-buttons).
 
 שני קבצי העבודה נשמרים ב**אחסון הפרטי של האפליקציה** (`context.filesDir`) ולא במקום גלוי
 למשתמש — בחירה מכוונת שחוסכת בקשות הרשאה לאחסון. הדרך היחידה להוציא אותם מהאפליקציה היא כפתור
@@ -149,15 +166,16 @@ sequenceDiagram
         FS-->>Inv: אישור כתיבה
         Inv-->>U: המסך נסגר, חוזר לסריקה הבאה
     else הכתיבה נכשלה
-        FS-->>Inv: IOException
+        FS-->>Inv: ExcelSaveException
         Inv-->>U: דיאלוג שגיאה, המסך נשאר פתוח (הנתון עדיין ב-DB)
     end
 ```
 
 חשוב להבין: **השמירה בפועל מתבצעת אחרי כל סריקה בודדת** (`InventoryActivity.saveAndFinish()`),
 **לא** רק בלחיצה על "סיים מיקום". "סיים מיקום" (`MainActivity.finishLocation()`) הוא כתיבה חוזרת
-נוספת — "רשת ביטחון" סופית — ולא הטריגר היחיד לשמירה. ראו את [[stockscanner-per-scan-excel-save]]
-בזיכרון הפרויקט לרקע ההיסטורי על השינוי הזה.
+נוספת — "רשת ביטחון" סופית — ולא הטריגר היחיד לשמירה. ראו
+[PR #9](https://github.com/nathanemuyal/StockScanner/pull/9) לרקע ההיסטורי על השינוי הזה
+(מ"שמירה רק בסיום מדף" ל"שמירה אחרי כל סריקה בודדת").
 
 ### קובץ המיקומים והכמויות הוא **יומן**, לא עותק של הקטלוג
 
@@ -186,9 +204,11 @@ sequenceDiagram
     ה־Reader/Writer כתובים מאפס מעל `java.util.zip` ו־`XmlPullParser` המובנה של אנדרואיד —
     **בלי** ספריית Apache POI, שידועה כבעייתית על אנדרואיד (תלות ב־AWT). כל תא נכתב כ־
     `t="inlineStr"` (לא כמספר) כדי שמקט כמו `"00042"` תמיד ישמור את האפסים המובילים שלו.
-    נקרא רק **הגיליון הראשון** של קובץ המקור.
+    נקרא רק **הגיליון הראשון** של קובץ המקור כרשימת המוצרים — פרט לגיליון **שני**, שאם קיים
+    ויש לו כותרות `מקט`/`ברקוד` מזוהה אוטומטית כ"ברקודים כפולים" (`ExcelReader.parseAliasSheet`).
+    גיליון שלישי ואילך, וכל גיליון שני שאינו תואם את הכותרות האלה, מתעלמים ממנו לגמרי.
 
-## מסך "פעולות Excel" — כל כפתור וממה הוא כותב
+## מסך "פעולות Excel" — כל כפתור וממה הוא כותב {#excel-actions-buttons}
 
 `ExcelActionsActivity` הוא המסך היחיד שנוגע בקובץ המקור ובכפתורי שמירה/ייצוא מפורשים:
 
