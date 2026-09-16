@@ -133,8 +133,11 @@ class ProductRepository(
      * different barcode scanned at a location [sku] already has, even a
      * second distinct barcode scanned again at the very same spot — opens a
      * brand-new row (cloned from an existing one), so nothing already
-     * recorded is ever lost or silently merged away. Never creates a row for
-     * an unknown sku.
+     * recorded is ever lost or silently merged away. That clone carries the
+     * product's identity only: its quantity starts empty rather than
+     * inheriting whatever was counted at the row it was cloned from, which
+     * belongs to that other shelf alone. Never creates a row for an unknown
+     * sku.
      *
      * The row this ends up touching is also marked [ProductEntity.scanned]
      * — this is the one and only place that happens, since this is the one
@@ -188,6 +191,12 @@ class ProductRepository(
             return
         }
 
+        // Cloned for the sku/description it carries — never for its
+        // quantity. That count was made at the template's own location, and
+        // copying it would put units nobody counted here into the
+        // locations/quantities file (this row is written to it immediately,
+        // being scanned = true) and prefill the inventory screen as if they
+        // had already been confirmed.
         val template = existingRows.first()
         val nextOrder = (dao.maxRowOrder() ?: -1) + 1
         dao.insert(
@@ -196,6 +205,11 @@ class ProductRepository(
                 description = newDescription,
                 barcode = trimmedBarcode,
                 location = trimmedLocation,
+                quantityType = ProductEntity.TYPE_UNITS,
+                packageContent = 0,
+                packageCount = 0,
+                looseUnits = 0,
+                quantity = 0,
                 scanned = true,
                 rowOrder = nextOrder
             )

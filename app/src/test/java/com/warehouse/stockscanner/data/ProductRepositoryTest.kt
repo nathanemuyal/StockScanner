@@ -409,6 +409,40 @@ class ProductRepositoryTest {
         assertEquals(60, row.quantity)
     }
 
+    /**
+     * A row opened for a genuinely new (location, barcode) is cloned for the
+     * product's identity, never for its count: the quantity it was cloned
+     * from was counted at *that* shelf. The clone is marked scanned, so it
+     * reaches the locations/quantities file straight away — inheriting the
+     * count would report units nobody ever counted at the new shelf, and
+     * would prefill the inventory screen as if they had been confirmed.
+     */
+    @Test
+    fun `a new location's row starts empty instead of inheriting the count from another shelf`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01", 0))
+        )
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+        repository.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_MIXED, 12, 5, 7, 67)
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "B-02")
+
+        val rows = db.productDao().findAllBySku("ABC-123").associateBy { it.location }
+        assertEquals(2, rows.size)
+        // The shelf that was actually counted keeps every bit of its count...
+        val counted = rows.getValue("A-01")
+        assertEquals(ProductEntity.TYPE_MIXED, counted.quantityType)
+        assertEquals(7, counted.looseUnits)
+        assertEquals(67, counted.quantity)
+        // ...and the new one starts from nothing, in the default mode.
+        val fresh = rows.getValue("B-02")
+        assertEquals(ProductEntity.TYPE_UNITS, fresh.quantityType)
+        assertEquals(0, fresh.packageContent)
+        assertEquals(0, fresh.packageCount)
+        assertEquals(0, fresh.looseUnits)
+        assertEquals(0, fresh.quantity)
+    }
+
     @Test
     fun `updateQuantity in mixed mode keeps the packages and the loose units on one row`() = runBlocking {
         db.productDao().insertAll(

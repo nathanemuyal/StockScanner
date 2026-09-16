@@ -104,7 +104,12 @@ class InventoryActivity : AppCompatActivity() {
 
         btnSaveInventory.setOnClickListener { save() }
 
-        prefillFromExistingRow()
+        // Only on a genuinely fresh screen. After a rotation the views are
+        // restored with whatever the worker had already typed, and this
+        // query answers asynchronously — it would come back *after* that
+        // restore and reset the screen to what's on the row (i.e. to
+        // nothing, since none of it is saved until "שמור והמשך").
+        if (savedInstanceState == null) prefillFromExistingRow()
     }
 
     /**

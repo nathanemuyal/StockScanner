@@ -19,6 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowToast
 
@@ -61,13 +62,35 @@ class InventoryActivityTest {
         runBlocking { AppDatabase.getInstance(context).productDao().insertAll(listOf(row)) }
     }
 
-    private fun launch(sku: String, location: String, barcode: String = "111"): InventoryActivity {
+    private fun controllerFor(
+        sku: String,
+        location: String,
+        barcode: String = "111"
+    ): ActivityController<InventoryActivity> {
         val intent = Intent(context, InventoryActivity::class.java)
             .putExtra(InventoryActivity.EXTRA_SKU, sku)
             .putExtra(InventoryActivity.EXTRA_LOCATION, location)
             .putExtra(InventoryActivity.EXTRA_BARCODE, barcode)
-        return Robolectric.buildActivity(InventoryActivity::class.java, intent).setup().get()
+        return Robolectric.buildActivity(InventoryActivity::class.java, intent).setup()
+            .also { settlePrefill() }
     }
+
+    /**
+     * The prefill is a coroutine over a background Room read, so it lands
+     * some time after the screen is up. A test that starts tapping before it
+     * comes back would have its taps silently undone by it — which is a race
+     * in the test, not the behaviour under test. Drained here so every test
+     * starts from a screen the prefill has already finished with.
+     */
+    private fun settlePrefill() {
+        repeat(30) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(5)
+        }
+    }
+
+    private fun launch(sku: String, location: String, barcode: String = "111"): InventoryActivity =
+        controllerFor(sku, location, barcode).get()
 
     @Test
     fun `opens in units mode by default with the package fields hidden`() {
@@ -224,6 +247,39 @@ class InventoryActivityTest {
         assertEquals("5", activity.findViewById<EditText>(R.id.etPackageCount).text.toString())
         assertEquals("7", activity.findViewById<EditText>(R.id.etLooseUnits).text.toString())
         assertEquals("67", activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
+    }
+
+    /**
+     * The screen is recreated on rotation, and nothing typed here is saved
+     * until "שמור והמשך" — so the row the prefill query answers with is
+     * still empty. Coming back after the view state was restored, it must
+     * not reset the screen to that empty row and throw away a count the
+     * worker has already typed (in מעורב, three fields' worth).
+     */
+    @Test
+    fun `a rotation keeps what was typed instead of the prefill resetting it`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+
+        val controller = controllerFor("ABC-123", "A-01-05")
+        val activity = controller.get()
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.VISIBLE }
+        activity.findViewById<EditText>(R.id.etPackageContent).setText("12")
+        activity.findViewById<EditText>(R.id.etPackageCount).setText("5")
+        activity.findViewById<EditText>(R.id.etLooseUnits).setText("7")
+        awaitUntil { activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString() == "67" }
+
+        controller.recreate()
+
+        val rotated = controller.get()
+        awaitUntil { rotated.findViewById<RadioButton>(R.id.rbMixed).isChecked }
+        assertEquals("12", rotated.findViewById<EditText>(R.id.etPackageContent).text.toString())
+        assertEquals("5", rotated.findViewById<EditText>(R.id.etPackageCount).text.toString())
+        assertEquals("7", rotated.findViewById<EditText>(R.id.etLooseUnits).text.toString())
+        assertEquals("67", rotated.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
+        assertEquals(View.VISIBLE, rotated.findViewById<View>(R.id.groupLoose).visibility)
     }
 
     @Test
