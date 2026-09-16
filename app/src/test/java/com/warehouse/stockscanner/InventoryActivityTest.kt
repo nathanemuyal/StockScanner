@@ -1,6 +1,7 @@
 package com.warehouse.stockscanner
 
 import android.content.Intent
+import android.os.Bundle
 import android.os.Looper
 import android.view.View
 import android.widget.Button
@@ -280,6 +281,40 @@ class InventoryActivityTest {
         assertEquals("7", rotated.findViewById<EditText>(R.id.etLooseUnits).text.toString())
         assertEquals("67", rotated.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
         assertEquals(View.VISIBLE, rotated.findViewById<View>(R.id.groupLoose).visibility)
+    }
+
+    /**
+     * The other side of the rotation guard: skipping the prefill is only
+     * right once it has actually had its say. A screen destroyed in the
+     * window between opening and the row coming back saves state that says
+     * so, and must prefill on the way back up — otherwise an already-counted
+     * row comes back looking like it was never counted at all.
+     *
+     * Driven by that saved state rather than by real timing: under
+     * Robolectric the prefill always wins the race, so the window can't be
+     * reproduced by rotating quickly — but a Bundle with no "already
+     * prefilled" mark is exactly what a screen torn down inside it leaves.
+     */
+    @Test
+    fun `a rotation that interrupted the prefill still fills in the saved quantity`() {
+        insertRow(
+            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_MIXED, 12, 5, 7, 67, scanned = true)
+        )
+
+        val intent = Intent(context, InventoryActivity::class.java)
+            .putExtra(InventoryActivity.EXTRA_SKU, "ABC-123")
+            .putExtra(InventoryActivity.EXTRA_LOCATION, "A-01-05")
+            .putExtra(InventoryActivity.EXTRA_BARCODE, "111")
+        val restored = Robolectric.buildActivity(InventoryActivity::class.java, intent)
+            .setup(Bundle())
+            .also { settlePrefill() }
+            .get()
+
+        awaitUntil { restored.findViewById<RadioButton>(R.id.rbMixed).isChecked }
+        assertEquals("12", restored.findViewById<EditText>(R.id.etPackageContent).text.toString())
+        assertEquals("5", restored.findViewById<EditText>(R.id.etPackageCount).text.toString())
+        assertEquals("7", restored.findViewById<EditText>(R.id.etLooseUnits).text.toString())
+        assertEquals("67", restored.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
     }
 
     @Test

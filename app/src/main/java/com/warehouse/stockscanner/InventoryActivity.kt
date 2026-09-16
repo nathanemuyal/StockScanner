@@ -46,12 +46,16 @@ class InventoryActivity : AppCompatActivity() {
         const val EXTRA_SKU = "sku"
         const val EXTRA_LOCATION = "location"
         const val EXTRA_BARCODE = "barcode"
+
+        /** Whether [prefillFromExistingRow] already had its say before the screen was recreated. */
+        private const val STATE_PREFILLED = "prefilled"
     }
 
     private lateinit var repository: ProductRepository
     private var sku: String = ""
     private var location: String = ""
     private var barcode: String = ""
+    private var prefilled = false
 
     private lateinit var rgQuantityType: RadioGroup
     private lateinit var rbUnits: RadioButton
@@ -104,12 +108,24 @@ class InventoryActivity : AppCompatActivity() {
 
         btnSaveInventory.setOnClickListener { save() }
 
-        // Only on a genuinely fresh screen. After a rotation the views are
-        // restored with whatever the worker had already typed, and this
+        // Only until it has actually run once. After a rotation the views
+        // are restored with whatever the worker had already typed, and this
         // query answers asynchronously — it would come back *after* that
         // restore and reset the screen to what's on the row (i.e. to
         // nothing, since none of it is saved until "שמור והמשך").
-        if (savedInstanceState == null) prefillFromExistingRow()
+        //
+        // Keyed on whether the prefill got to apply rather than on
+        // savedInstanceState being null, because those aren't the same
+        // thing: rotating in the moment between opening the screen and the
+        // row coming back would otherwise skip the prefill for good and
+        // leave an already-counted row looking empty.
+        prefilled = savedInstanceState?.getBoolean(STATE_PREFILLED) == true
+        if (!prefilled) prefillFromExistingRow()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_PREFILLED, prefilled)
     }
 
     /**
@@ -151,6 +167,7 @@ class InventoryActivity : AppCompatActivity() {
             }
             updateFieldVisibility(rgQuantityType.checkedRadioButtonId)
             recalcTotalUnits()
+            prefilled = true
         }
     }
 

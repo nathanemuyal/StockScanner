@@ -443,6 +443,54 @@ class ProductRepositoryTest {
         assertEquals(0, fresh.quantity)
     }
 
+    /**
+     * The same rule as the cloned row, on the other path that places one:
+     * a quantity sitting on a not-yet-shelved row came in on the source
+     * file, not from anyone counting it at the shelf it is only now being
+     * put on. Since this marks the row scanned, keeping that number would
+     * send units nobody counted straight into the locations/quantities file.
+     */
+    @Test
+    fun `shelving a blank row starts its count fresh instead of keeping the source file's`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity(
+                    "ABC-123", "מוצר", "", "", 0,
+                    ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60
+                )
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        // Still the same row, now placed and confirmed...
+        assertEquals("A-01", row.location)
+        assertEquals("111", row.barcode)
+        assertEquals(true, row.scanned)
+        // ...but counted from scratch, by the inventory screen, not by the file.
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+        assertEquals(0, row.packageContent)
+        assertEquals(0, row.packageCount)
+        assertEquals(0, row.looseUnits)
+        assertEquals(0, row.quantity)
+    }
+
+    /** Re-confirming a row already at this exact spot leaves the count that was made there alone. */
+    @Test
+    fun `re-scanning a row at its own location keeps the quantity already counted there`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01", 0)))
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+        repository.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_MIXED, 12, 5, 7, 67)
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(ProductEntity.TYPE_MIXED, row.quantityType)
+        assertEquals(7, row.looseUnits)
+        assertEquals(67, row.quantity)
+    }
+
     @Test
     fun `updateQuantity in mixed mode keeps the packages and the loose units on one row`() = runBlocking {
         db.productDao().insertAll(

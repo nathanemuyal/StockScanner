@@ -14,6 +14,9 @@ import org.robolectric.RobolectricTestRunner
 
 private const val DB_NAME = "migration_test.db"
 
+/** The name [AppDatabase.getInstance] actually opens — the file a real upgrade would land on. */
+private const val PRODUCTION_DB_NAME = "stock_scanner.db"
+
 /**
  * A worker who updates the app in the middle of a count must not lose the
  * rows they've already scanned — so the "מעורב" mode's new column ships as
@@ -33,17 +36,21 @@ class AppDatabaseMigrationTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        AppDatabase.resetForTests()
         context.deleteDatabase(DB_NAME)
+        context.deleteDatabase(PRODUCTION_DB_NAME)
     }
 
     @After
     fun tearDown() {
+        AppDatabase.resetForTests()
         context.deleteDatabase(DB_NAME)
+        context.deleteDatabase(PRODUCTION_DB_NAME)
     }
 
     /** Writes a real v6 database file holding [rows] — pre-looseUnits schema, user_version 6. */
-    private fun createV6DatabaseWith(vararg rows: String) {
-        val path = context.getDatabasePath(DB_NAME)
+    private fun createV6DatabaseWith(vararg rows: String, name: String = DB_NAME) {
+        val path = context.getDatabasePath(name)
         path.parentFile?.mkdirs()
         val db = SQLiteDatabase.openOrCreateDatabase(path, null)
         db.execSQL(
@@ -111,6 +118,56 @@ class AppDatabaseMigrationTest {
         } finally {
             db.close()
         }
+    }
+
+    /**
+     * The migration existing isn't the same as production using it. This
+     * goes through [AppDatabase.getInstance] itself, on the database name it
+     * really opens — the one path a worker's upgrade actually takes. Without
+     * the `addMigrations` wiring the builder's `fallbackToDestructiveMigration`
+     * would swallow the missing migration and hand back an empty table, so
+     * the row count below is what keeps that wiring from being dropped.
+     */
+    @Test
+    fun `getInstance migrates the real database instead of falling back to a wipe`() = runBlocking {
+        createV6DatabaseWith(
+            "INSERT INTO products (sku, description, barcode, location, rowOrder, quantityType, " +
+                "packageContent, packageCount, quantity, scanned) " +
+                "VALUES ('ABC-123', 'בורג', '111', 'A-01', 0, 'אריזות', 12, 5, 60, 1)",
+            "INSERT INTO products (sku, description, barcode, location, rowOrder, quantityType, " +
+                "packageContent, packageCount, quantity, scanned) " +
+                "VALUES ('XYZ-9', 'אום', '222', 'B-02', 1, 'יחידות', 0, 0, 7, 1)",
+            name = PRODUCTION_DB_NAME
+        )
+
+        val rows = AppDatabase.getInstance(context).productDao().getAllOrdered()
+
+        assertEquals(2, rows.size)
+        val packageRow = rows.first { it.sku == "ABC-123" }
+        assertEquals(60, packageRow.quantity)
+        assertEquals(0, packageRow.looseUnits)
+        assertEquals(7, rows.first { it.sku == "XYZ-9" }.quantity)
+    }
+
+    /**
+     * The next schema change has to bring its own migration. Pinning the
+     * declared version to the migrations that actually reach it means a bump
+     * to v8 with nothing covering 7 -> 8 fails here, instead of silently
+     * falling through to the destructive rebuild in production.
+     */
+    @Test
+    fun `every schema version up to the declared one is covered by a migration`() {
+        // Read back from Room itself rather than from the @Database
+        // annotation, which isn't retained at runtime.
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).allowMainThreadQueries().build()
+        val declared = try {
+            db.openHelper.readableDatabase.version
+        } finally {
+            db.close()
+        }
+
+        assertEquals(6, AppDatabase.MIGRATION_6_7.startVersion)
+        assertEquals(declared, AppDatabase.MIGRATION_6_7.endVersion)
     }
 
     @Test
