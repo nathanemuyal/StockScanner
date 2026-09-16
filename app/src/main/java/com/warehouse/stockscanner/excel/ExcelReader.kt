@@ -49,6 +49,7 @@ object ExcelReader {
     private const val COL_QUANTITY_TYPE = "סוג כמות"
     private const val COL_PACKAGE_CONTENT = "תכולת אריזה"
     private const val COL_PACKAGE_COUNT = "כמות אריזות"
+    private const val COL_LOOSE_UNITS = "יחידות בודדות"
     private const val COL_QUANTITY = "כמות יחידות"
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
@@ -278,6 +279,7 @@ object ExcelReader {
         val quantityTypeCol = headers[COL_QUANTITY_TYPE]
         val packageContentCol = headers[COL_PACKAGE_CONTENT]
         val packageCountCol = headers[COL_PACKAGE_COUNT]
+        val looseUnitsCol = headers[COL_LOOSE_UNITS]
         val quantityCol = headers[COL_QUANTITY]
 
         // Every header matching "מיקום" or "מיקום <n>", in ascending order of
@@ -314,6 +316,7 @@ object ExcelReader {
             val quantityType: String,
             val packageContent: Int,
             val packageCount: Int,
+            val looseUnits: Int,
             val quantity: Int
         )
 
@@ -326,17 +329,26 @@ object ExcelReader {
             val locations = locationCols.mapNotNull { row[it]?.trim() }.filter { it.isNotEmpty() }.distinct()
 
             val quantityType = quantityTypeCol?.let { row[it]?.trim() }
-                .takeIf { it == ProductEntity.TYPE_PACKAGE }
+                .takeIf { it == ProductEntity.TYPE_PACKAGE || it == ProductEntity.TYPE_MIXED }
                 ?: ProductEntity.TYPE_UNITS
             val packageContent = packageContentCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
             val packageCount = packageCountCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+            // Only meaningful in מעורב mode; a stray value under any other
+            // mode is dropped rather than silently inflating that row's total.
+            val looseUnits = if (quantityType == ProductEntity.TYPE_MIXED) {
+                looseUnitsCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+            } else {
+                0
+            }
             val quantity = quantityCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
 
             if (locations.isEmpty()) {
-                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, quantity))
+                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, looseUnits, quantity))
             } else {
                 for (location in locations) {
-                    rawTuples.add(RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, quantity))
+                    rawTuples.add(
+                        RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, looseUnits, quantity)
+                    )
                 }
             }
         }
@@ -352,7 +364,7 @@ object ExcelReader {
         val products = bySkuLocationAndBarcode.values.mapIndexed { index, t ->
             ProductEntity(
                 t.sku, t.description, t.barcode, t.location, index,
-                t.quantityType, t.packageContent, t.packageCount, t.quantity
+                t.quantityType, t.packageContent, t.packageCount, t.looseUnits, t.quantity
             )
         }
         val duplicateRows = rawTuples.size - bySkuLocationAndBarcode.size

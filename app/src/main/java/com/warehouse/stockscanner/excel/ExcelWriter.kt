@@ -32,14 +32,18 @@ object ExcelWriter {
     private const val COL_QUANTITY_TYPE = "סוג כמות"
     private const val COL_PACKAGE_CONTENT = "תכולת אריזה"
     private const val COL_PACKAGE_COUNT = "כמות אריזות"
+    private const val COL_LOOSE_UNITS = "יחידות בודדות"
     private const val COL_QUANTITY = "כמות יחידות"
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
 
+    // COL_LOOSE_UNITS sits between the package breakdown it belongs to and
+    // the COL_QUANTITY total it feeds into: in "מעורב" mode the shelf holds
+    // whole packages *and* loose singles, and the total is the sum of both.
     private val PRODUCT_HEADERS = listOf(
         COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION,
-        COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_QUANTITY
+        COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_LOOSE_UNITS, COL_QUANTITY
     )
 
     // Order matches the task spec's example: מק"ט, תיאור, ברקוד.
@@ -101,7 +105,8 @@ object ExcelWriter {
     private fun productRows(products: List<ProductEntity>): List<List<String>> = products.map { p ->
         listOf(
             p.sku, p.description, p.barcode, p.location,
-            p.quantityType, p.packageContent.toString(), p.packageCount.toString(), p.quantity.toString()
+            p.quantityType, p.packageContent.toString(), p.packageCount.toString(),
+            p.looseUnits.toString(), p.quantity.toString()
         )
     }
 

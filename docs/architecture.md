@@ -11,7 +11,7 @@ app/src/main/java/com/warehouse/stockscanner/
 ├── MainActivity.kt              מסך הבית — תזמור הזרימה, מצב "מיקום פעיל"
 ├── ScannerActivity.kt           מסך סריקה (CameraX + ML Kit) — למיקום ולמוצר
 ├── ProductConfirmActivity.kt    מסך אישור/עריכה של מוצר שנסרק
-├── InventoryActivity.kt         מסך רישום כמות (יחידות / אריזות)
+├── InventoryActivity.kt         מסך רישום כמות (יחידות / אריזות / מעורב)
 ├── SearchActivity.kt            חיפוש סלחני לפי תיאור (כשברקוד לא נמצא)
 ├── SearchResultAdapter.kt       Adapter משותף לרשימות תוצאות/מוצרים
 ├── ExcelActionsActivity.kt      מסך נפרד לכל מה שקשור ל־Excel (טעינה/שמירה/ייצוא)
@@ -80,9 +80,10 @@ flowchart TD
 | `barcode` (ברקוד) | String | **שייך לשורה עצמה**, לא למקט כמכלול |
 | `location` (מיקום) | String | ריק = עדיין לא שובץ למדף |
 | `rowOrder` | Int | סדר הכתיבה החוזר לקובץ ה־Excel |
-| `quantityType` | String | `"יחידות"` או `"אריזות"` |
-| `packageContent`, `packageCount` | Int | תכולת אריזה × מספר אריזות (רק כש־`quantityType == "אריזות"`) |
-| `quantity` | Int | כמות היחידות הסופית — תמיד מחושבת, בשני המצבים |
+| `quantityType` | String | `"יחידות"`, `"אריזות"` או `"מעורב"` |
+| `packageContent`, `packageCount` | Int | תכולת אריזה × מספר אריזות (רק ב־`"אריזות"` וב־`"מעורב"`) |
+| `looseUnits` | Int | יחידות בודדות שמונחות ליד האריזות (רק ב־`"מעורב"`; 0 בשאר המצבים) |
+| `quantity` | Int | כמות היחידות הסופית — תמיד מחושבת, בכל שלושת המצבים (`ProductEntity.totalUnits`) |
 | `scanned` | Boolean | `true` רק אם השורה אושרה בפועל דרך סריקה באפליקציה — ראו [קובץ המיקומים](#excel-files) |
 
 אינדקס ייחודי: **`UNIQUE(sku, location, barcode)`**. משמעות מעשית: סריקה חוזרת של אותו
@@ -196,6 +197,7 @@ sequenceDiagram
 | `סוג כמות` | quantityType | לא — ברירת מחדל `"יחידות"` |
 | `תכולת אריזה` | packageContent | לא — ברירת מחדל 0 |
 | `כמות אריזות` | packageCount | לא — ברירת מחדל 0 |
+| `יחידות בודדות` | looseUnits | לא — ברירת מחדל 0; נקרא רק כש־`סוג כמות` הוא `"מעורב"` |
 | `כמות יחידות` | quantity | לא — ברירת מחדל 0 |
 
 **קובץ ברקודים מרובים** — עמודות: `מקט`, `תאור`, `ברקוד` (ברקוד אחד נוסף לכל שורה).

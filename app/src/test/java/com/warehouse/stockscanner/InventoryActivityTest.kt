@@ -24,8 +24,9 @@ import org.robolectric.shadows.ShadowToast
 
 /**
  * The inventory screen shown right after a product is confirmed: it must
- * record either a direct unit count or a package breakdown (auto-computing
- * the resulting unit total), scoped to exactly the (sku, location, barcode)
+ * record a direct unit count, a package breakdown, or both at once
+ * ("מעורב" — packages plus the loose singles beside them), auto-computing
+ * the resulting unit total, scoped to exactly the (sku, location, barcode)
  * row it was opened for.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -126,7 +127,7 @@ class InventoryActivityTest {
     @Test
     fun `re-opening for the same row prefills the previously saved package quantity`() {
         insertRow(
-            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60, scanned = true)
+            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60, scanned = true)
         )
 
         val activity = launch("ABC-123", "A-01-05")
@@ -136,6 +137,116 @@ class InventoryActivityTest {
         assertEquals("12", activity.findViewById<EditText>(R.id.etPackageContent).text.toString())
         assertEquals("5", activity.findViewById<EditText>(R.id.etPackageCount).text.toString())
         assertEquals("60", activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
+    }
+
+    @Test
+    fun `mixed mode shows the package fields plus the loose-units field`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.VISIBLE }
+
+        assertEquals(View.GONE, activity.findViewById<View>(R.id.groupUnits).visibility)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.groupPackage).visibility)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.groupTotal).visibility)
+    }
+
+    /**
+     * A shelf with 5 sealed packages of 12 plus 7 loose singles is 67 units
+     * on ONE row — the case that used to force a second scan of the same
+     * ברקוד, whose quantity then overwrote the first one.
+     */
+    @Test
+    fun `mixed mode adds the loose units on top of the package total and saves the breakdown`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.VISIBLE }
+
+        activity.findViewById<EditText>(R.id.etPackageContent).setText("12")
+        activity.findViewById<EditText>(R.id.etPackageCount).setText("5")
+        activity.findViewById<EditText>(R.id.etLooseUnits).setText("7")
+        awaitUntil { activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString() == "67" }
+
+        activity.findViewById<Button>(R.id.btnSaveInventory).performClick()
+        awaitUntil { activity.isFinishing }
+
+        val row = runBlocking { AppDatabase.getInstance(context).productDao().findAllBySku("ABC-123") }.single()
+        assertEquals(ProductEntity.TYPE_MIXED, row.quantityType)
+        assertEquals(12, row.packageContent)
+        assertEquals(5, row.packageCount)
+        assertEquals(7, row.looseUnits)
+        assertEquals(67, row.quantity)
+    }
+
+    @Test
+    fun `switching between packages and mixed recomputes the total for the same fields`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.VISIBLE }
+        activity.findViewById<EditText>(R.id.etPackageContent).setText("12")
+        activity.findViewById<EditText>(R.id.etPackageCount).setText("5")
+        activity.findViewById<EditText>(R.id.etLooseUnits).setText("7")
+        awaitUntil { activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString() == "67" }
+
+        // Back to plain אריזות: the loose field is hidden and stops counting,
+        // even though its text is still there for a switch back.
+        activity.findViewById<RadioButton>(R.id.rbPackage).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.GONE }
+        assertEquals("60", activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString() == "67" }
+    }
+
+    @Test
+    fun `re-opening for the same row prefills the previously saved mixed quantity`() {
+        insertRow(
+            ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_MIXED, 12, 5, 7, 67, scanned = true)
+        )
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbMixed).isChecked }
+
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.groupPackage).visibility)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.groupLoose).visibility)
+        assertEquals("12", activity.findViewById<EditText>(R.id.etPackageContent).text.toString())
+        assertEquals("5", activity.findViewById<EditText>(R.id.etPackageCount).text.toString())
+        assertEquals("7", activity.findViewById<EditText>(R.id.etLooseUnits).text.toString())
+        assertEquals("67", activity.findViewById<TextView>(R.id.tvTotalUnits).text.toString())
+    }
+
+    @Test
+    fun `an invalid loose-units value warns instead of saving`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+
+        val activity = launch("ABC-123", "A-01-05")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.VISIBLE }
+        activity.findViewById<EditText>(R.id.etPackageContent).setText("12")
+        activity.findViewById<EditText>(R.id.etPackageCount).setText("5")
+        activity.findViewById<EditText>(R.id.etLooseUnits).setText("")
+        activity.findViewById<Button>(R.id.btnSaveInventory).performClick()
+
+        awaitUntil { ShadowToast.getTextOfLatestToast() != null }
+        assertEquals("יש להזין כמות יחידות בודדות תקינה", ShadowToast.getTextOfLatestToast())
+        assertEquals(false, activity.isFinishing)
+
+        val row = runBlocking { AppDatabase.getInstance(context).productDao().findAllBySku("ABC-123") }.single()
+        assertEquals(0, row.quantity)
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
     }
 
     @Test

@@ -384,7 +384,7 @@ class ProductRepositoryTest {
             )
         )
 
-        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_UNITS, 0, 0, 15)
+        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 15)
 
         val rows = db.productDao().findAllBySku("ABC-123")
         val updatedRow = rows.first { it.location == "A-01-05" }
@@ -400,7 +400,7 @@ class ProductRepositoryTest {
             listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
         )
 
-        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_PACKAGE, 12, 5, 60)
+        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_PACKAGE, 12, 5, 0, 60)
 
         val row = db.productDao().findAllBySku("ABC-123").single()
         assertEquals(ProductEntity.TYPE_PACKAGE, row.quantityType)
@@ -410,12 +410,72 @@ class ProductRepositoryTest {
     }
 
     @Test
+    fun `updateQuantity in mixed mode keeps the packages and the loose units on one row`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+
+        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_MIXED, 12, 5, 7, 67)
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(ProductEntity.TYPE_MIXED, row.quantityType)
+        assertEquals(12, row.packageContent)
+        assertEquals(5, row.packageCount)
+        assertEquals(7, row.looseUnits)
+        // Both halves of the shelf, in one total, on the one row they share.
+        assertEquals(67, row.quantity)
+    }
+
+    /**
+     * The whole point of מעורב: a shelf holding sealed packages AND loose
+     * singles of the same מקט under a single ברקוד is one row — both halves
+     * have to reach the physical file together. Counting them as two scans
+     * of that same barcode can't work: (sku, location, barcode) is one row,
+     * so the second quantity would simply overwrite the first.
+     */
+    @Test
+    fun `packages and loose units on the same shelf survive together in the saved file`() = runBlocking {
+        val sourceUri = writeSourceFile(listOf(ProductEntity("ABC-123", "בורג", "111", "", 0)))
+        repository.loadFromExcel(sourceUri, "products.xlsx")
+
+        repository.updateProduct("ABC-123", "בורג", "111", "A-01")
+        repository.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_MIXED, 12, 5, 7, 67)
+        repository.saveWorkingCopies()
+
+        assertEquals(1, repository.count())
+        val saved = locationsFile().inputStream().use { ExcelReader.readProductsFromStream(it) }.products.single()
+        assertEquals("A-01", saved.location)
+        assertEquals(ProductEntity.TYPE_MIXED, saved.quantityType)
+        assertEquals(12, saved.packageContent)
+        assertEquals(5, saved.packageCount)
+        assertEquals(7, saved.looseUnits)
+        assertEquals(67, saved.quantity)
+    }
+
+    @Test
+    fun `switching a row from mixed back to plain units clears the loose count`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
+        )
+        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_MIXED, 12, 5, 7, 67)
+
+        repository.updateQuantity("ABC-123", "A-01-05", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 9)
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+        assertEquals(0, row.packageContent)
+        assertEquals(0, row.packageCount)
+        assertEquals(0, row.looseUnits)
+        assertEquals(9, row.quantity)
+    }
+
+    @Test
     fun `updateQuantity for a location with no row is a no-op`() = runBlocking {
         db.productDao().insertAll(
             listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
         )
 
-        repository.updateQuantity("ABC-123", "DOES-NOT-EXIST", "111", ProductEntity.TYPE_UNITS, 0, 0, 15)
+        repository.updateQuantity("ABC-123", "DOES-NOT-EXIST", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 15)
 
         val row = db.productDao().findAllBySku("ABC-123").single()
         assertEquals(0, row.quantity)
@@ -425,7 +485,7 @@ class ProductRepositoryTest {
     fun `findRow returns the exact sku+location row, prefill-ready for the inventory screen`() = runBlocking {
         db.productDao().insertAll(
             listOf(
-                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60),
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60),
                 ProductEntity("ABC-123", "מוצר", "111", "B-02-01", 1)
             )
         )
@@ -579,7 +639,7 @@ class ProductRepositoryTest {
             listOf(
                 ProductEntity(
                     "ABC-123", "מוצר", "111", "A-01-05", 0,
-                    ProductEntity.TYPE_PACKAGE, 12, 5, 60
+                    ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60
                 )
             )
         )

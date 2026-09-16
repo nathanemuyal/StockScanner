@@ -240,8 +240,12 @@ class ProductRepository(
     /**
      * Records the stock quantity for [sku] at [location] with [barcode]
      * (that row only — quantity is per row, like everything else on it).
-     * Never creates a row: the (location, barcode) combination must already
-     * have been confirmed via [updateProduct] first.
+     * [quantity] is always the row's final count in single units;
+     * [packageContent]/[packageCount]/[looseUnits] are the breakdown it was
+     * derived from (see [ProductEntity] for what each mode uses), kept so
+     * the inventory screen can prefill exactly what was typed. Never creates
+     * a row: the (location, barcode) combination must already have been
+     * confirmed via [updateProduct] first.
      */
     suspend fun updateQuantity(
         sku: String,
@@ -250,6 +254,7 @@ class ProductRepository(
         quantityType: String,
         packageContent: Int,
         packageCount: Int,
+        looseUnits: Int,
         quantity: Int
     ) {
         val row = dao.findBySkuLocationAndBarcode(sku, location.trim(), barcode.trim()) ?: return
@@ -258,6 +263,7 @@ class ProductRepository(
                 quantityType = quantityType,
                 packageContent = packageContent,
                 packageCount = packageCount,
+                looseUnits = looseUnits,
                 quantity = quantity
             )
         )
@@ -288,6 +294,7 @@ class ProductRepository(
                     quantityType = ProductEntity.TYPE_UNITS,
                     packageContent = 0,
                     packageCount = 0,
+                    looseUnits = 0,
                     quantity = 0,
                     scanned = false
                 )
