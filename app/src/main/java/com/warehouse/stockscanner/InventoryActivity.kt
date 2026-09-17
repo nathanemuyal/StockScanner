@@ -198,9 +198,13 @@ class InventoryActivity : AppCompatActivity() {
      * v8 on: a database that upgraded mid-count has 0 there for rows that
      * were genuinely counted before the upgrade, and shaping the screen from
      * the barcode instead would drop a worker's own number in front of them.
-     * Carrying a non-zero count is the other way to tell, and it is reliable
-     * because a row that has only been placed is emptied on confirmation —
-     * see ProductRepository.updateProduct.
+     * Carrying a non-zero count is the other way to tell, and it is only
+     * reliable because every path in ProductRepository.updateProduct empties
+     * a row it is placing for the first time — including the one that
+     * confirms a row the source file already gave a מיקום, a ברקוד and a
+     * quantity. Without that last one this fallback would read the file's
+     * expected figure as a count and put it straight in front of the worker,
+     * so this screen depends on it rather than merely benefiting from it.
      *
      * The one case this misses is a shelf genuinely counted as zero before
      * an upgrade, which reads as uncounted. countedAt covers it from here on.

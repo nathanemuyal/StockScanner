@@ -516,4 +516,39 @@ class InventoryActivityTest {
 
         assertEquals("43", activity.findViewById<EditText>(R.id.etQuantity).text.toString())
     }
+
+    /**
+     * Guards the seam between this screen and the emptying rule in
+     * ProductRepository.updateProduct.
+     *
+     * A row the source file gave a מיקום, a ברקוד *and* a quantity reaches
+     * the screen with countedAt still 0, so the fallback in wasCountedHere()
+     * has only the quantity to go on. If updateProduct stopped emptying such
+     * a row on first confirmation, that quantity would read as a count and
+     * the worker would be shown the figure the file expects before counting
+     * anything — the whole thing this app must not do. Driving the real
+     * confirmation path rather than inserting a pre-emptied row is what makes
+     * this a guard instead of a restatement.
+     */
+    @Test
+    fun `a quantity that came from the source file is never shown as a count`() {
+        insertRow(
+            ProductEntity(
+                "ABC-123", "מוצר", "111", "A-01-05", 0,
+                ProductEntity.TYPE_PACKAGE, 12, 5, 0, quantity = 60, scanned = false
+            )
+        )
+        registerBarcode("111", "ABC-123", BarcodeEntity.ROLE_UNIT)
+        // The scan that confirms this shelf for the first time.
+        runBlocking {
+            (context.applicationContext as StockScannerApp).repository
+                .updateProduct("ABC-123", "מוצר", "111", "A-01-05")
+        }
+
+        val activity = launch("ABC-123", "A-01-05", "111")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        assertEquals("", activity.findViewById<EditText>(R.id.etQuantity).text.toString())
+        assertEquals("", activity.findViewById<EditText>(R.id.etPackageContent).text.toString())
+    }
 }
