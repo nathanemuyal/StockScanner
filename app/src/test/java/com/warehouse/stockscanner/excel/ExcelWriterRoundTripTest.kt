@@ -198,4 +198,47 @@ class ExcelWriterRoundTripTest {
         val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
         assertTrue(result.barcodes.isEmpty())
     }
+
+    /**
+     * The stamp has to reach the file a worker hands back, not just the
+     * database. Settling which of two counts is the fresh one happens over
+     * the spreadsheet, and until now the column simply was not there.
+     */
+    @Test
+    fun `when a row was counted survives a write and read`() {
+        val counted = 1_726_000_000_000L
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 10, true, counted),
+            // Placed but never counted — no date belongs on it.
+            ProductEntity("XYZ-9", "אום", "222", "B-02", 1, ProductEntity.TYPE_UNITS, 0, 0, 0, 0, true, 0L)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+        val readBack = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products.associateBy { it.sku }
+
+        // Written for people, so it round-trips to the minute rather than the
+        // millisecond — the database keeps the exact value.
+        assertEquals(counted / 60000L, readBack.getValue("ABC-123").countedAt / 60000L)
+        assertEquals(0L, readBack.getValue("XYZ-9").countedAt)
+    }
+
+    /** A file written before the column existed still loads, reading as never counted. */
+    @Test
+    fun `a detail sheet without the counted-at column still loads`() {
+        val bytes = ByteArrayOutputStream().use { out ->
+            // writeProductsToStream is the legacy shape the reader still accepts.
+            ExcelWriter.writeProductsToStream(
+                out,
+                listOf(ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 10, true, 0L))
+            )
+            out.toByteArray()
+        }
+
+        val row = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products.single()
+        assertEquals(10, row.quantity)
+        assertEquals(0L, row.countedAt)
+    }
 }
