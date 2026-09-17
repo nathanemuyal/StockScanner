@@ -35,6 +35,9 @@ interface BarcodeDao {
     @Query("SELECT * FROM barcodes WHERE sku = :sku ORDER BY id ASC")
     suspend fun findAllBySku(sku: String): List<BarcodeEntity>
 
+    @Query("UPDATE barcodes SET role = :role, packageContent = :packageContent WHERE barcode = :barcode")
+    suspend fun setRole(barcode: String, role: String, packageContent: Int)
+
     @Query("SELECT * FROM barcodes ORDER BY id ASC")
     suspend fun getAll(): List<BarcodeEntity>
 }

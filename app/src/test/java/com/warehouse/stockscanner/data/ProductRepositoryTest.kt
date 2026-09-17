@@ -834,6 +834,33 @@ class ProductRepositoryTest {
         assertEquals(listOf("C-03-01"), db.productDao().findAllBySku("WRONG-1").map { it.location })
     }
 
+    /**
+     * Moving a code to the right מקט must not throw away what it says about
+     * packaging. That answer can be a worker's own, given once when the code
+     * was first scanned, and it is never asked for again — the code counts
+     * as known from then on. Losing it would leave every later scan of it
+     * dividing a carton by its contents, silently.
+     */
+    @Test
+    fun `reassignBarcode keeps what the code says about packaging`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("WRONG-1", "מוצר שגוי", "111", "A-01-05", 0),
+                ProductEntity("RIGHT-1", "מוצר נכון", "", "", 1)
+            )
+        )
+        repository.registerBarcode("111", "WRONG-1", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        repository.reassignBarcode("111", "RIGHT-1")
+
+        val moved = repository.barcodeInfo("111")!!
+        // The product changed...
+        assertEquals("RIGHT-1", moved.sku)
+        // ...the carton it is stuck on did not.
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, moved.role)
+        assertEquals(12, moved.packageContent)
+    }
+
     @Test
     fun `reassignBarcode to an unknown sku is a no-op, keeping the existing link intact`() = runBlocking {
         db.productDao().insertAll(

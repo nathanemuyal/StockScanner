@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The "how many units in a package?" prompt. A real layout rather than a
+     view built in code so the field has a stable id to address. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:layoutDirection="rtl"
+    android:paddingStart="24dp"
+    android:paddingEnd="24dp"
+    android:paddingTop="12dp">
+
+    <EditText
+        android:id="@+id/etPackageContentPrompt"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="number"
+        android:hint="לדוגמה: 12"
+        android:importantForAutofill="no" />
+
+</LinearLayout>
