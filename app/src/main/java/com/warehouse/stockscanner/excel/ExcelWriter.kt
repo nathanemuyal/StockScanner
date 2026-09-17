@@ -144,7 +144,12 @@ object ExcelWriter {
                 descriptionBySku[barcode.sku].orEmpty(),
                 barcode.barcode,
                 barcode.role,
-                barcode.packageContent.toString()
+                // Blank rather than 0 for a code on a single unit: there is no
+                // package, so there is no number to state. Most of this file is
+                // such codes, and a column of zeroes reads as a real figure
+                // somebody should be looking at. The reader ignores the cell
+                // under בודד either way, so nothing round-trips differently.
+                barcode.packageContent.takeIf { it > 0 }?.toString().orEmpty()
             )
         }
     }
