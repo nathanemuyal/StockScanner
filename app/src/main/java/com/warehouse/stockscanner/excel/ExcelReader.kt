@@ -66,6 +66,7 @@ object ExcelReader {
     private const val COL_PACKAGE_COUNT = "כמות אריזות"
     private const val COL_LOOSE_UNITS = "יחידות בודדות"
     private const val COL_QUANTITY = "כמות יחידות"
+    private const val COL_COUNTED_AT = "נספר בתאריך"
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
@@ -325,6 +326,7 @@ object ExcelReader {
         val packageCountCol = headers[COL_PACKAGE_COUNT]
         val looseUnitsCol = headers[COL_LOOSE_UNITS]
         val quantityCol = headers[COL_QUANTITY]
+        val countedAtCol = headers[COL_COUNTED_AT]
 
         // Every header matching "מיקום" or "מיקום <n>", in ascending order of
         // n (the bare "מיקום" counts as 1) — each becomes its own row for the
@@ -361,7 +363,8 @@ object ExcelReader {
             val packageContent: Int,
             val packageCount: Int,
             val looseUnits: Int,
-            val quantity: Int
+            val quantity: Int,
+            val countedAt: Long
         )
 
         val rawTuples = ArrayList<RawTuple>()
@@ -385,13 +388,18 @@ object ExcelReader {
                 0
             }
             val quantity = quantityCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+            // Optional like the quantity columns, and forgiving for the same
+            // reason: a file written before the column existed, or one whose
+            // date a spreadsheet reformatted on the way through, still loads
+            // — it just reads as never counted rather than failing the load.
+            val countedAt = countedAtCol?.let { parseCountedAt(row[it]?.trim()) } ?: 0L
 
             if (locations.isEmpty()) {
-                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, looseUnits, quantity))
+                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, looseUnits, quantity, countedAt))
             } else {
                 for (location in locations) {
                     rawTuples.add(
-                        RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, looseUnits, quantity)
+                        RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, looseUnits, quantity, countedAt)
                     )
                 }
             }
@@ -408,7 +416,8 @@ object ExcelReader {
         val products = bySkuLocationAndBarcode.values.mapIndexed { index, t ->
             ProductEntity(
                 t.sku, t.description, t.barcode, t.location, index,
-                t.quantityType, t.packageContent, t.packageCount, t.looseUnits, t.quantity
+                t.quantityType, t.packageContent, t.packageCount, t.looseUnits, t.quantity,
+                countedAt = t.countedAt
             )
         }
         val duplicateRows = rawTuples.size - bySkuLocationAndBarcode.size
@@ -469,6 +478,21 @@ object ExcelReader {
             byBarcode[barcode] = BarcodeEntity(barcode = barcode, sku = sku, role = role, packageContent = content)
         }
         return byBarcode.values.toList()
+    }
+
+    /**
+     * Reads back the human-facing stamp the writer produces. Anything that
+     * is not in that shape — blank, a spreadsheet's own reformatting, a
+     * file from before the column existed — reads as never counted, which
+     * is the honest answer when the file does not say.
+     */
+    private fun parseCountedAt(value: String?): Long {
+        if (value.isNullOrBlank()) return 0L
+        return try {
+            java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).parse(value)?.time ?: 0L
+        } catch (e: java.text.ParseException) {
+            0L
+        }
     }
 
     private fun buildHeaderMap(row: Map<Int, String>): Map<String, Int> {
