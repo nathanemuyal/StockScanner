@@ -87,7 +87,7 @@ class ExcelReaderTest {
     @Test
     fun `a single-sheet source file from elsewhere has no barcode aliases, not a crash`() {
         val result = fixture("sample_normal.xlsx").use { ExcelReader.readProductsFromStream(it) }
-        assertTrue(result.barcodeAliases.isEmpty())
+        assertTrue(result.barcodes.isEmpty())
     }
 
     @Test

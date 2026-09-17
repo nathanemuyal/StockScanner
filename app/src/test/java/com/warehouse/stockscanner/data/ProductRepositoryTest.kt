@@ -46,11 +46,11 @@ class ProductRepositoryTest {
             .allowMainThreadQueries()
             .build()
         prefs = SessionPrefs(context)
-        repository = ProductRepository(context, db.productDao(), db.barcodeAliasDao(), prefs)
+        repository = ProductRepository(context, db.productDao(), db.barcodeDao(), prefs)
     }
 
     /** Writes [products] (and optionally [aliases]) as a real .xlsx to a temp file, returning a Uri as if picked via SAF. */
-    private fun writeSourceFile(products: List<ProductEntity>, aliases: List<BarcodeAliasEntity> = emptyList()): Uri {
+    private fun writeSourceFile(products: List<ProductEntity>, aliases: List<BarcodeEntity> = emptyList()): Uri {
         val file = File.createTempFile("source", ".xlsx", context.cacheDir)
         FileOutputStream(file).use { ExcelWriter.writeProductsToStream(it, products, aliases) }
         return Uri.fromFile(file)
@@ -608,6 +608,33 @@ class ProductRepositoryTest {
         assertEquals(9, row.quantity)
     }
 
+    /**
+     * A count that gets questioned later has to be answerable, and neither
+     * the scanned flag nor the quantity can say when a number was put there.
+     * updateQuantity is the only thing that ever records a count, so it is
+     * the only thing that can date one.
+     */
+    @Test
+    fun `updateQuantity stamps the row with when it was counted`() = runBlocking {
+        val pinned = 1_726_000_000_000L
+        val stamped = ProductRepository(context, db.productDao(), db.barcodeDao(), prefs) { pinned }
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01", 0)))
+
+        stamped.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 43)
+
+        assertEquals(pinned, db.productDao().findAllBySku("ABC-123").single().countedAt)
+    }
+
+    /** Placing a row is not counting it — the stamp waits for a real count. */
+    @Test
+    fun `a row confirmed but not yet counted carries no stamp`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        assertEquals(0L, db.productDao().findAllBySku("ABC-123").single().countedAt)
+    }
+
     @Test
     fun `updateQuantity for a location with no row is a no-op`() = runBlocking {
         db.productDao().insertAll(
@@ -639,7 +666,7 @@ class ProductRepositoryTest {
     fun `loadFromExcel also loads barcode aliases from the ברקודים כפולים sheet`() = runBlocking {
         val sourceUri = writeSourceFile(
             listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
-            listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123"))
+            listOf(BarcodeEntity(barcode = "222", sku = "ABC-123"))
         )
 
         repository.loadFromExcel(sourceUri)
@@ -894,7 +921,7 @@ class ProductRepositoryTest {
         repository.loadFromExcel(
             writeSourceFile(
                 listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
-                listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123"))
+                listOf(BarcodeEntity(barcode = "222", sku = "ABC-123"))
             )
         )
         repository.updateProduct("ABC-123", "מוצר", "111", "B-02-01") // a new location, in memory only so far
@@ -938,7 +965,7 @@ class ProductRepositoryTest {
         AppDatabase.resetForTests()
         val realDb = AppDatabase.getInstance(context) // file-backed, unlike this test class's in-memory db
         val realPrefs = SessionPrefs(context)
-        val firstRunRepository = ProductRepository(context, realDb.productDao(), realDb.barcodeAliasDao(), realPrefs)
+        val firstRunRepository = ProductRepository(context, realDb.productDao(), realDb.barcodeDao(), realPrefs)
 
         firstRunRepository.loadFromExcel(writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))), "מלאי.xlsx")
         firstRunRepository.updateProduct("ABC-123", "מוצר", "111", "B-02-01")
@@ -953,7 +980,7 @@ class ProductRepositoryTest {
         AppDatabase.resetForTests()
         val reopenedDb = AppDatabase.getInstance(context)
         val reopenedPrefs = SessionPrefs(context)
-        val reopenedRepository = ProductRepository(context, reopenedDb.productDao(), reopenedDb.barcodeAliasDao(), reopenedPrefs)
+        val reopenedRepository = ProductRepository(context, reopenedDb.productDao(), reopenedDb.barcodeDao(), reopenedPrefs)
 
         assertEquals(locationsNameBefore, reopenedPrefs.locationsQuantitiesFileName)
         assertEquals(barcodesNameBefore, reopenedPrefs.multipleBarcodesFileName)

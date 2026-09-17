@@ -1,6 +1,6 @@
 package com.warehouse.stockscanner.excel
 
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -57,8 +57,8 @@ class PhysicalExcelFileTest {
         try {
             val products = listOf(ProductEntity("ABC-123", "פילטר שמן", "111", "A-01-05", 0))
             val aliases = listOf(
-                BarcodeAliasEntity(barcode = "222", sku = "ABC-123"),
-                BarcodeAliasEntity(barcode = "333", sku = "ABC-123")
+                BarcodeEntity(barcode = "222", sku = "ABC-123"),
+                BarcodeEntity(barcode = "333", sku = "ABC-123")
             )
 
             FileOutputStream(realFile).use { out -> ExcelWriter.writeMultipleBarcodesToStream(out, aliases, products) }
