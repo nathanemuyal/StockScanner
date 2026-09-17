@@ -129,6 +129,25 @@ class ProductRepository(
     }
 
     /**
+     * Describes a ברקוד already on file — what a scan of it means. Separate
+     * from [registerBarcode] because that one deliberately never overwrites
+     * an existing row: a scan must not silently move a code between מקטים,
+     * whereas a worker answering "what is this sticker on?" is saying exactly
+     * what this code means and should be taken at their word.
+     *
+     * Only the packaging changes; the מקט the code belongs to never does.
+     */
+    suspend fun setBarcodeRole(barcode: String, role: String, packageContent: Int) {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty() || role !in BarcodeEntity.ROLES) return
+        barcodeDao.setRole(
+            trimmed,
+            role,
+            if (role == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
+        )
+    }
+
+    /**
      * Records a ברקוד discovered mid-count — one that was scanned at a shelf
      * without ever appearing in the source file. Without this the code would
      * live only on the product row it created and resolve nowhere on the next
@@ -354,11 +373,23 @@ class ProductRepository(
         if (wrongRow.sku == newSku) return
 
         val newDescription = newRows.first().description
+        // What the code means physically is not in question here — only
+        // which product it belongs to. The sticker is still on the same
+        // carton of twelve whoever owns it, and re-registration below would
+        // otherwise reset it to a plain single unit. That answer can be a
+        // worker's own, given once when the code was first seen, and it
+        // would not be asked for again: the code counts as known from then
+        // on, so every later scan would quietly divide the carton by its
+        // contents.
+        val packaging = barcodeDao.findByBarcode(trimmed)
         removeFromLocation(wrongRow)
         // The code itself has to change hands too, or it would keep
         // resolving to the מקט this call exists to move it away from.
         barcodeDao.deleteByBarcode(trimmed)
         updateProduct(newSku, newDescription, trimmed, wrongRow.location)
+        if (packaging != null && packaging.role != BarcodeEntity.ROLE_UNIT) {
+            setBarcodeRole(trimmed, packaging.role, packaging.packageContent)
+        }
     }
 
     /** The exact row for [sku] at [location] with [barcode] — used by the inventory screen to prefill an existing quantity. */
