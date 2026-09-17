@@ -248,6 +248,35 @@ class AppDatabaseMigrationTest {
     }
 
     /**
+     * The unique index is on (sku, location, barcode), not on barcode alone,
+     * so two different מקטים really can carry the same code on their product
+     * rows. Only one claim survives into v8, and which one must not depend on
+     * the order SQLite happens to scan in — an upgrade has no screen to
+     * report an ambiguity on, so the least it can do is be repeatable.
+     */
+    @Test
+    fun `a code two product rows claim resolves to the one the file listed first`() = runBlocking {
+        createV7DatabaseWith(
+            // Deliberately inserted in the opposite order to rowOrder, so a
+            // pass that just took what it found first would pick SECOND-1.
+            "INSERT INTO products (sku, description, barcode, location, rowOrder, quantityType, " +
+                "packageContent, packageCount, looseUnits, quantity, scanned) " +
+                "VALUES ('SECOND-1', 'שני', '777', 'B-02', 5, 'יחידות', 0, 0, 0, 0, 0)",
+            "INSERT INTO products (sku, description, barcode, location, rowOrder, quantityType, " +
+                "packageContent, packageCount, looseUnits, quantity, scanned) " +
+                "VALUES ('FIRST-1', 'ראשון', '777', 'A-01', 1, 'יחידות', 0, 0, 0, 0, 0)"
+        )
+
+        val db = openMigrated()
+        try {
+            assertEquals("FIRST-1", db.barcodeDao().findSkuByBarcode("777"))
+            assertEquals(1, db.barcodeDao().getAll().count { it.barcode == "777" })
+        } finally {
+            db.close()
+        }
+    }
+
+    /**
      * The same code can sit on a product row AND in the alias table. The
      * alias is the deliberate statement of which מקט owns it, so it must be
      * the one that survives — matching the IGNORE the alias table was always
