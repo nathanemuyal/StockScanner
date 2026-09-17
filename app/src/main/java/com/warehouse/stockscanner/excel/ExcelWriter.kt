@@ -94,9 +94,15 @@ object ExcelWriter {
 
     /**
      * The "multiple barcodes per מקט" working file: every extra ברקוד
-     * aliased to a sku that already has its own primary one, alongside that
-     * sku's description for readability (looked up from [products], not
-     * stored redundantly on [BarcodeEntity] itself).
+     * belonging to a sku, alongside that sku's description for readability
+     * (looked up from [products], not stored redundantly on [BarcodeEntity]
+     * itself).
+     *
+     * Note this is every code the count knows, not only the extra ones. The
+     * table behind it now holds a product's own primary code too, so on a
+     * database that reached v8 by migration this file gains a row per
+     * primary barcode — it grows, and the name "multiple barcodes" describes
+     * what it was first needed for rather than what it holds.
      */
     fun writeMultipleBarcodesToStream(
         output: OutputStream,
