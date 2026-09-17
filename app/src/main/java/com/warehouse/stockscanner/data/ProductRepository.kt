@@ -281,15 +281,24 @@ class ProductRepository(
             return
         }
 
-        // A single not-yet-placed row (no location yet) whose barcode either
+        // A not-yet-placed row (no location yet) whose barcode either
         // isn't known yet or already matches this scan just gets the
         // location filled in, instead of being left behind as an orphaned
         // blank row alongside a new one this scan would otherwise create —
         // covers both a genuinely fresh catalog entry (blank barcode too)
         // and a product whose barcode was already known but never shelved.
-        val blankRow = existingRows.singleOrNull {
-            it.location.isBlank() && (it.barcode.isBlank() || it.barcode == trimmedBarcode)
-        }
+        // Two candidates can coexist: an unplaced row already carrying this
+        // ברקוד, and an unplaced row with none. (Two rows with nothing in
+        // both columns cannot — the unique index on sku+location+barcode
+        // forbids it.) Demanding exactly one match made such a scan clone a
+        // third row instead, stranding both originals for the rest of the
+        // count and adding a row no shelf and no scan ever accounted for.
+        //
+        // The row already carrying this code is the better home for it, so
+        // it is tried first; a blank-barcode row is the fallback, which is
+        // what the single-candidate case always did.
+        val blankRow = existingRows.firstOrNull { it.location.isBlank() && it.barcode == trimmedBarcode }
+            ?: existingRows.firstOrNull { it.location.isBlank() && it.barcode.isBlank() }
         if (blankRow != null) {
             // Placed for the first time, so its count starts here too. A
             // quantity that rode in on the source file was never counted at
