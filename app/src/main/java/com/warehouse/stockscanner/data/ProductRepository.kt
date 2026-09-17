@@ -164,12 +164,17 @@ class ProductRepository(
     ) {
         val trimmed = barcode.trim()
         if (trimmed.isEmpty() || sku.isBlank()) return
+        // Both fields decided from the sanitised role, not the raw argument:
+        // an unrecognised one falls back to a plain unit, and a package
+        // content kept beside it would contradict the very rule the reader
+        // enforces — a unit has no package to hold anything.
+        val safeRole = role.takeIf { it in BarcodeEntity.ROLES } ?: BarcodeEntity.ROLE_UNIT
         barcodeDao.insert(
             BarcodeEntity(
                 barcode = trimmed,
                 sku = sku,
-                role = role.takeIf { it in BarcodeEntity.ROLES } ?: BarcodeEntity.ROLE_UNIT,
-                packageContent = if (role == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
+                role = safeRole,
+                packageContent = if (safeRole == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
             )
         )
     }
