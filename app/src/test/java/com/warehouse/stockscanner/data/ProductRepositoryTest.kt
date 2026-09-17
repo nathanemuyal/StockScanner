@@ -701,6 +701,24 @@ class ProductRepositoryTest {
         assertEquals(BarcodeEntity.ROLE_UNIT, repository.barcodeInfo("999")!!.role)
     }
 
+    /**
+     * A role nothing recognises falls back to a plain unit, and the package
+     * content has to fall with it: a row saying בודד while carrying a carton
+     * size of 12 contradicts the rule the reader enforces on the very same
+     * data, and would quietly feed a package screen a size for a code that
+     * is not on packages.
+     */
+    @Test
+    fun `an unrecognised role drops its package content too`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+
+        repository.registerBarcode("999", "ABC-123", "קרטון", 12)
+
+        val stored = repository.barcodeInfo("999")!!
+        assertEquals(BarcodeEntity.ROLE_UNIT, stored.role)
+        assertEquals(0, stored.packageContent)
+    }
+
     /** A code already owned by another מקט is never quietly stolen by a scan. */
     @Test
     fun `registering a barcode never moves it off the sku that already owns it`() = runBlocking {
