@@ -129,6 +129,25 @@ class ProductRepository(
     }
 
     /**
+     * Describes a ברקוד already on file — what a scan of it means. Separate
+     * from [registerBarcode] because that one deliberately never overwrites
+     * an existing row: a scan must not silently move a code between מקטים,
+     * whereas a worker answering "what is this sticker on?" is saying exactly
+     * what this code means and should be taken at their word.
+     *
+     * Only the packaging changes; the מקט the code belongs to never does.
+     */
+    suspend fun setBarcodeRole(barcode: String, role: String, packageContent: Int) {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty() || role !in BarcodeEntity.ROLES) return
+        barcodeDao.setRole(
+            trimmed,
+            role,
+            if (role == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
+        )
+    }
+
+    /**
      * Records a ברקוד discovered mid-count — one that was scanned at a shelf
      * without ever appearing in the source file. Without this the code would
      * live only on the product row it created and resolve nowhere on the next

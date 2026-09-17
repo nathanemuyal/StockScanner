@@ -3,11 +3,13 @@ package com.warehouse.stockscanner
 import android.app.Activity
 import android.content.DialogInterface
 import android.content.Intent
+import android.widget.EditText
 import android.os.Looper
 import android.widget.Button
 import androidx.appcompat.app.AlertDialog
 import androidx.test.core.app.ApplicationProvider
 import com.warehouse.stockscanner.data.AppDatabase
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -57,9 +59,12 @@ class ProductConfirmActivityTest {
     @Test
     fun `confirming a product opens the inventory screen for the same sku and location, without finishing yet`() {
         runBlocking {
-            AppDatabase.getInstance(context).productDao().insertAll(
-                listOf(ProductEntity("ABC-123", "מוצר ישן", "111", "", 0))
-            )
+            val db = AppDatabase.getInstance(context)
+            db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר ישן", "111", "", 0)))
+            // An import seeds the barcodes table from the product rows, and a
+            // scan registers whatever it finds; inserting straight into the
+            // dao skips both, and an unknown code is asked about on confirm.
+            db.barcodeDao().insert(BarcodeEntity(barcode = "111", sku = "ABC-123"))
         }
 
         val intent = Intent(context, ProductConfirmActivity::class.java)
@@ -217,5 +222,95 @@ class ProductConfirmActivityTest {
         val activity = Robolectric.buildActivity(ProductConfirmActivity::class.java, intent).setup().get()
 
         assertEquals(android.view.View.GONE, activity.findViewById<Button>(R.id.btnChangeSku).visibility)
+    }
+
+    private fun showingDialog(): AlertDialog? =
+        (ShadowDialog.getLatestDialog() as? AlertDialog)?.takeIf { it.isShowing }
+
+    private fun confirmScreenFor(sku: String, scannedBarcode: String, location: String): ProductConfirmActivity {
+        val intent = Intent(context, ProductConfirmActivity::class.java)
+            .putExtra(ProductConfirmActivity.EXTRA_SKU, sku)
+            .putExtra(ProductConfirmActivity.EXTRA_DESCRIPTION, "מוצר")
+            .putExtra(ProductConfirmActivity.EXTRA_EXISTING_BARCODE, scannedBarcode)
+            .putExtra(ProductConfirmActivity.EXTRA_SCANNED_BARCODE, scannedBarcode)
+            .putStringArrayListExtra(ProductConfirmActivity.EXTRA_EXISTING_LOCATIONS, ArrayList())
+            .putExtra(ProductConfirmActivity.EXTRA_CURRENT_LOCATION, location)
+        return Robolectric.buildActivity(ProductConfirmActivity::class.java, intent).setup().get()
+    }
+
+    private fun pickRoleItem(index: Int) {
+        val list = showingDialog()!!.listView!!
+        list.performItemClick(null, index, list.adapter.getItemId(index))
+    }
+
+    /**
+     * The one thing a scan cannot tell you. Without an answer every code is
+     * a single unit, which silently divides a carton count by its contents.
+     */
+    @Test
+    fun `an unrecognised barcode is asked about, and the answer is remembered`() {
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "", "", 0))
+            )
+        }
+
+        val activity = confirmScreenFor("ABC-123", "999", "A-01-05")
+        activity.findViewById<Button>(R.id.btnConfirm).performClick()
+
+        awaitUntil { showingDialog()?.listView != null }
+        pickRoleItem(1) // אריזה
+
+        awaitUntil { showingDialog()?.findViewById<EditText>(R.id.etPackageContentPrompt) != null }
+        showingDialog()!!.findViewById<EditText>(R.id.etPackageContentPrompt)!!.setText("12")
+        showingDialog()!!.getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+
+        awaitUntil { shadowOf(activity).peekNextStartedActivityForResult() != null }
+
+        val stored = runBlocking { AppDatabase.getInstance(context).barcodeDao().findByBarcode("999") }!!
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, stored.role)
+        assertEquals(12, stored.packageContent)
+        assertEquals("ABC-123", stored.sku)
+    }
+
+    /** Once per ברקוד for the whole count, not once per scan. */
+    @Test
+    fun `a barcode already on file raises no question`() {
+        runBlocking {
+            val db = AppDatabase.getInstance(context)
+            db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "111", "", 0)))
+            db.barcodeDao().insert(BarcodeEntity(barcode = "111", sku = "ABC-123"))
+        }
+
+        val activity = confirmScreenFor("ABC-123", "111", "A-01-05")
+        activity.findViewById<Button>(R.id.btnConfirm).performClick()
+
+        awaitUntil { shadowOf(activity).peekNextStartedActivityForResult() != null }
+        assertEquals(null, showingDialog()?.listView)
+    }
+
+    /**
+     * "לא יודע" is a real answer, not a failure: the scan goes through, the
+     * code stays a plain unit, and the question comes back next time.
+     */
+    @Test
+    fun `declining to describe a barcode still lets the scan through`() {
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "", "", 0))
+            )
+        }
+
+        val activity = confirmScreenFor("ABC-123", "999", "A-01-05")
+        activity.findViewById<Button>(R.id.btnConfirm).performClick()
+
+        awaitUntil { showingDialog()?.listView != null }
+        pickRoleItem(3) // לא יודע
+
+        awaitUntil { shadowOf(activity).peekNextStartedActivityForResult() != null }
+
+        val stored = runBlocking { AppDatabase.getInstance(context).barcodeDao().findByBarcode("999") }!!
+        assertEquals(BarcodeEntity.ROLE_UNIT, stored.role)
+        assertEquals(0, stored.packageContent)
     }
 }

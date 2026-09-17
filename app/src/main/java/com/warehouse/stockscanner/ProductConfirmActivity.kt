@@ -11,9 +11,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductLookup
 import com.warehouse.stockscanner.data.ProductRepository
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 /**
  * Confirmation screen shown for every scanned product, whether it was found
@@ -132,7 +135,24 @@ class ProductConfirmActivity : AppCompatActivity() {
 
     private fun saveAndFinish(sku: String, description: String, barcode: String, location: String) {
         lifecycleScope.launch {
+            val trimmedBarcode = barcode.trim()
+            // Asked before the row is written, and only for a code nothing
+            // has described yet — once per ברקוד for the whole count, not
+            // once per scan. Skipped entirely when the product was picked
+            // from search rather than scanned (no code to describe).
+            val role = if (trimmedBarcode.isNotEmpty() && repository.barcodeInfo(trimmedBarcode) == null) {
+                askBarcodeRole(trimmedBarcode)
+            } else {
+                null
+            }
+
             repository.updateProduct(sku, description, barcode, location)
+            // updateProduct registers an unknown code as a plain unit; if the
+            // worker said otherwise, that answer replaces the assumption.
+            if (role != null && role.first != BarcodeEntity.ROLE_UNIT) {
+                repository.setBarcodeRole(trimmedBarcode, role.first, role.second)
+            }
+
             val intent = Intent(this@ProductConfirmActivity, InventoryActivity::class.java)
                 .putExtra(InventoryActivity.EXTRA_SKU, sku)
                 .putExtra(InventoryActivity.EXTRA_LOCATION, location)
@@ -181,5 +201,66 @@ class ProductConfirmActivity : AppCompatActivity() {
             startActivity(intent)
             finish()
         }
+    }
+
+    /**
+     * Asks, once per ברקוד, what the sticker is actually on — the one thing
+     * a scan cannot tell you. The same product is routinely coded twice, on
+     * the carton and on the single unit, and sometimes a single code serves
+     * both; without an answer every code is treated as a single unit, which
+     * silently divides a carton count by its contents.
+     *
+     * Cancelling is a legitimate answer: the code stays a plain unit, the
+     * scan still goes through, and the question comes back the next time
+     * this code is seen. Nothing here is a stock figure — "how many in a
+     * carton" is a fact about the packaging — so it tells the worker nothing
+     * about what they are expected to find.
+     */
+    private suspend fun askBarcodeRole(barcode: String): Pair<String, Int>? =
+        suspendCancellableCoroutine { continuation ->
+            // One list, one tap, including the way out. Mixing setItems with
+            // a button makes the "don't know" path a different gesture from
+            // the three real answers for no reason.
+            val labels = arrayOf(
+                "בודד — הברקוד על יחידה אחת",
+                "אריזה — הברקוד על אריזה",
+                "גם וגם — אותו ברקוד על שניהם",
+                "לא יודע"
+            )
+            val roles = arrayOf(BarcodeEntity.ROLE_UNIT, BarcodeEntity.ROLE_PACKAGE, BarcodeEntity.ROLE_MIXED, null)
+
+            fun resume(value: Pair<String, Int>?) {
+                if (continuation.isActive) continuation.resume(value)
+            }
+
+            AlertDialog.Builder(this)
+                .setTitle("ברקוד חדש: $barcode")
+                .setCancelable(false)
+                .setItems(labels) { _, which ->
+                    when (val role = roles[which]) {
+                        null -> resume(null)
+                        BarcodeEntity.ROLE_UNIT -> resume(role to 0)
+                        else -> askPackageContent(role, ::resume)
+                    }
+                }
+                .show()
+        }
+
+    /** How many single units the package holds — the number that stops being retyped at every scan. */
+    private fun askPackageContent(role: String, resume: (Pair<String, Int>?) -> Unit) {
+        val view = layoutInflater.inflate(R.layout.dialog_package_content, null)
+        val input = view.findViewById<EditText>(R.id.etPackageContentPrompt)
+        AlertDialog.Builder(this)
+            .setTitle("כמה יחידות באריזה?")
+            .setView(view)
+            .setCancelable(false)
+            .setPositiveButton("שמור") { _, _ ->
+                val content = input.text.toString().trim().toIntOrNull()
+                // An unusable answer leaves the code a plain unit rather than
+                // recording a carton size nobody actually gave.
+                if (content == null || content <= 0) resume(null) else resume(role to content)
+            }
+            .setNegativeButton("ביטול") { _, _ -> resume(null) }
+            .show()
     }
 }
