@@ -228,6 +228,33 @@ class ExcelWriterRoundTripTest {
     }
 
     /**
+     * A person opens this file too. A code on a single unit has no package,
+     * so its תכולה cell is left empty rather than stating a zero — most of
+     * the file is such codes, and a column of zeroes reads as a real figure
+     * worth checking. Asserted on the written cell, since reading it back
+     * cannot tell an empty cell from a 0.
+     */
+    @Test
+    fun `a single-unit code leaves the package content cell empty`() {
+        val barcodes = listOf(
+            BarcodeEntity(barcode = "444", sku = "XYZ-9", role = BarcodeEntity.ROLE_UNIT),
+            BarcodeEntity(barcode = "222", sku = "XYZ-9", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12)
+        )
+        val products = listOf(ProductEntity("XYZ-9", "אום", "444", "B-02-01", 0))
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeMultipleBarcodesToStream(out, barcodes, products)
+            out.toByteArray()
+        }
+        val sheet = sheetXmlOf(bytes)
+
+        // Row 2 is the בודד code: no תכולה cell value at all.
+        assertFalse("a בודד row should carry no package content", sheet.contains(">0<"))
+        // Row 3 is the אריזה code, which still states its 12.
+        assertTrue("an אריזה row must still state its content", sheet.contains(">12<"))
+    }
+
+    /**
      * The stamp has to reach the file a worker hands back, not just the
      * database. Settling which of two counts is the fresh one happens over
      * the spreadsheet, and until now the column simply was not there.
