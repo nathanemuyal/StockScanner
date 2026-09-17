@@ -200,6 +200,34 @@ class ExcelWriterRoundTripTest {
     }
 
     /**
+     * The barcodes working file is what a worker hands back, so a role
+     * discovered during a count has to survive the trip out and back in —
+     * otherwise the next count re-asks every question this one answered.
+     */
+    @Test
+    fun `packaging roles survive a write and read of the barcodes file`() {
+        val barcodes = listOf(
+            BarcodeEntity(barcode = "222", sku = "ABC-123", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12),
+            BarcodeEntity(barcode = "333", sku = "ABC-123", role = BarcodeEntity.ROLE_MIXED, packageContent = 6),
+            BarcodeEntity(barcode = "444", sku = "XYZ-9", role = BarcodeEntity.ROLE_UNIT)
+        )
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר שמן", "111", "A-01-05", 0),
+            ProductEntity("XYZ-9", "אום", "444", "B-02-01", 1)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeMultipleBarcodesToStream(out, barcodes, products)
+            out.toByteArray()
+        }
+        val readBack = ExcelReader.readMultipleBarcodesFromStream(ByteArrayInputStream(bytes))
+
+        assertEquals(listOf("222", "333", "444"), readBack.map { it.barcode })
+        assertEquals(listOf("אריזה", "מעורב", "בודד"), readBack.map { it.role })
+        assertEquals(listOf(12, 6, 0), readBack.map { it.packageContent })
+    }
+
+    /**
      * The stamp has to reach the file a worker hands back, not just the
      * database. Settling which of two counts is the fresh one happens over
      * the spreadsheet, and until now the column simply was not there.

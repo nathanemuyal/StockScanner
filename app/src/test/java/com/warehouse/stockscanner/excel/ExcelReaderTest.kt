@@ -1,5 +1,6 @@
 package com.warehouse.stockscanner.excel
 
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -116,5 +117,46 @@ class ExcelReaderTest {
         val bySku = result.products.associateBy { it.sku }
         assertEquals("A-01-06", bySku.getValue("SINGLE-1").location)
         assertEquals("", bySku.getValue("NONE-1").location)
+    }
+
+    /**
+     * What a scan of a code means is the only thing a barcode cannot say for
+     * itself, so the source file gets to state it. A role the app does not
+     * recognise falls back to a plain unit rather than failing the load —
+     * one odd cell must not cost a worker the whole file.
+     */
+    @Test
+    fun `reads the packaging role and content from the barcodes sheet`() {
+        val result = fixture("sample_barcode_roles.xlsx").use { ExcelReader.readProductsFromStream(it) }
+
+        val byBarcode = result.barcodes.associateBy { it.barcode }
+        assertEquals(setOf("222", "333", "555", "666"), byBarcode.keys)
+
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, byBarcode.getValue("222").role)
+        assertEquals(12, byBarcode.getValue("222").packageContent)
+
+        assertEquals(BarcodeEntity.ROLE_MIXED, byBarcode.getValue("333").role)
+        assertEquals(6, byBarcode.getValue("333").packageContent)
+
+        // No role given at all.
+        assertEquals(BarcodeEntity.ROLE_UNIT, byBarcode.getValue("555").role)
+        assertEquals(0, byBarcode.getValue("555").packageContent)
+
+        // "קרטון" is not one of the three roles; it reads as a plain unit,
+        // and its content goes with it rather than lingering unexplained.
+        assertEquals(BarcodeEntity.ROLE_UNIT, byBarcode.getValue("666").role)
+        assertEquals(0, byBarcode.getValue("666").packageContent)
+    }
+
+    /** A file exported before roles existed still loads; every code in it is a plain unit. */
+    @Test
+    fun `a barcodes sheet without the role columns still loads`() {
+        val result = fixture("sample_barcode_roles_legacy.xlsx").use { ExcelReader.readProductsFromStream(it) }
+
+        val only = result.barcodes.single()
+        assertEquals("222", only.barcode)
+        assertEquals("ABC-123", only.sku)
+        assertEquals(BarcodeEntity.ROLE_UNIT, only.role)
+        assertEquals(0, only.packageContent)
     }
 }

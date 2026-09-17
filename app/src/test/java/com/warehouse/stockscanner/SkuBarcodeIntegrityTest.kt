@@ -195,16 +195,19 @@ class SkuBarcodeIntegrityTest {
         confirmAndRecordQuantity("ABC-123", "מצבר 12V", primaryBarcode, secondBarcode, "A-01-05", 5)
 
         // Both barcodes now have their own row at that location — a distinct
-        // row per scan, never siloed into a separate "aliases" file.
+        // row per scan, because the shelf's count is per (מקט, מיקום, ברקוד).
         val rows = savedLocationsRows()
         assertEquals(2, rows.size)
         assertTrue(rows.all { it.sku == "ABC-123" && it.location == "A-01-05" })
         assertEquals(setOf(primaryBarcode, secondBarcode), rows.map { it.barcode }.toSet())
         assertTrue("neither row's barcode column may ever be the sku", rows.none { it.barcode == it.sku })
 
-        val aliasFile = context.repository.multipleBarcodesFile()!!
-        val aliases = aliasFile.inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
-        assertTrue("a normal scan no longer writes to the aliases file", aliases.isEmpty())
+        // ...and both codes are on file, which is the other half of the job:
+        // a second sticker discovered at a shelf is exactly what a count is
+        // there to turn up, and it has to survive into the barcodes file.
+        val barcodeFile = context.repository.multipleBarcodesFile()!!
+        val barcodes = barcodeFile.inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
+        assertEquals(setOf(primaryBarcode, secondBarcode), barcodes.map { it.barcode }.toSet())
     }
 
     // --- 4. Barcode not found -> search by description -> confirm -----------
