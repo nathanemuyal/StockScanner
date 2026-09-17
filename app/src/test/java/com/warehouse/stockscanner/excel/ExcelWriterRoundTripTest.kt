@@ -401,6 +401,6 @@ class ExcelWriterRoundTripTest {
         val result = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes))
 
         assertEquals(2, result.products.size)
-        assertTrue("the summary must not become barcode rows", result.barcodeAliases.isEmpty())
+        assertTrue("the summary must not become barcode rows", result.barcodes.isEmpty())
     }
 }
