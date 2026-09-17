@@ -666,6 +666,44 @@ class ProductRepositoryTest {
     }
 
     /**
+     * The same code claimed by one מקט on a product row and by another on
+     * the barcodes sheet. Only one claim can survive, so the other product's
+     * units would be counted onto the wrong מקט — the loader has to say so
+     * rather than pick quietly.
+     */
+    @Test
+    fun `a barcode two skus both claim is reported, and the sheet's owner wins`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0),
+                ProductEntity("XYZ-9", "אחר", "222", "B-02-01", 1)
+            ),
+            // The sheet says 222 belongs to ABC-123; the product row says XYZ-9.
+            listOf(BarcodeEntity(barcode = "222", sku = "ABC-123"))
+        )
+
+        val result = repository.loadFromExcel(sourceUri)
+
+        assertEquals(1, result.duplicateBarcodeRows)
+        // The sheet states ownership outright, so it is the claim that stands.
+        assertEquals("ABC-123", repository.findByBarcode("222")!!.sku)
+    }
+
+    /** A code the sheet repeats for the same מקט is agreement, not a conflict. */
+    @Test
+    fun `a barcode both sheets agree on is not reported as a conflict`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
+            listOf(BarcodeEntity(barcode = "111", sku = "ABC-123"))
+        )
+
+        val result = repository.loadFromExcel(sourceUri)
+
+        assertEquals(0, result.duplicateBarcodeRows)
+        assertEquals("ABC-123", repository.findByBarcode("111")!!.sku)
+    }
+
+    /**
      * The whole point of keeping a role on a code: the screens that count a
      * shelf can ask what this scan means instead of making the worker say it
      * again at every single scan.
