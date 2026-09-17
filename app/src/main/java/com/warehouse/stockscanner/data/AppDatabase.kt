@@ -52,6 +52,17 @@ abstract class AppDatabase : RoomDatabase() {
          * both name the same code, matching the IGNORE the alias table was
          * always written with.
          *
+         * The products pass is ordered because the unique index is on
+         * (sku, location, barcode), not on barcode alone — so two different
+         * מקטים really can carry the same code, and only one claim can
+         * survive here. Unordered, the winner would be whichever row SQLite
+         * happened to scan first; ORDER BY rowOrder makes it the one the
+         * source file listed first, which is both fixed and explicable. (No
+         * DISTINCT needed alongside it: IGNORE already collapses repeats.)
+         * A file in that state is ambiguous data, not a migration fault —
+         * loading one reports the conflict, but an upgrade has no screen to
+         * report anything on, so the least it can do is not be arbitrary.
+         *
          * Everything lands as [BarcodeEntity.ROLE_UNIT] with no package
          * content: that is exactly what the app assumed before this table
          * existed — one scan, one unit — so an upgrade mid-count changes
@@ -76,7 +87,8 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "INSERT OR IGNORE INTO barcodes (barcode, sku, role, packageContent) " +
-                        "SELECT DISTINCT barcode, sku, '${BarcodeEntity.ROLE_UNIT}', 0 FROM products WHERE barcode <> ''"
+                        "SELECT barcode, sku, '${BarcodeEntity.ROLE_UNIT}', 0 FROM products " +
+                        "WHERE barcode <> '' ORDER BY rowOrder"
                 )
                 db.execSQL("DROP TABLE barcode_aliases")
             }
