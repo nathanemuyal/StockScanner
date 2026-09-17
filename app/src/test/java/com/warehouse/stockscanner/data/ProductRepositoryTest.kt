@@ -46,11 +46,11 @@ class ProductRepositoryTest {
             .allowMainThreadQueries()
             .build()
         prefs = SessionPrefs(context)
-        repository = ProductRepository(context, db.productDao(), db.barcodeAliasDao(), prefs)
+        repository = ProductRepository(context, db.productDao(), db.barcodeDao(), prefs)
     }
 
     /** Writes [products] (and optionally [aliases]) as a real .xlsx to a temp file, returning a Uri as if picked via SAF. */
-    private fun writeSourceFile(products: List<ProductEntity>, aliases: List<BarcodeAliasEntity> = emptyList()): Uri {
+    private fun writeSourceFile(products: List<ProductEntity>, aliases: List<BarcodeEntity> = emptyList()): Uri {
         val file = File.createTempFile("source", ".xlsx", context.cacheDir)
         FileOutputStream(file).use { ExcelWriter.writeProductsToStream(it, products, aliases) }
         return Uri.fromFile(file)
@@ -107,6 +107,53 @@ class ProductRepositoryTest {
         assertEquals(2, repository.count()) // a new row was opened, the old one kept
     }
 
+    /**
+     * A מקט can legitimately have two unplaced rows: one already carrying a
+     * ברקוד and one with none. (Two with nothing in both columns cannot —
+     * the unique index forbids it.) Requiring exactly one candidate made a
+     * scan of that very ברקוד clone a third row, stranding both originals
+     * and adding one no shelf and no scan ever accounted for.
+     */
+    @Test
+    fun `a scan fills the unplaced row already carrying its barcode instead of cloning a third`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "", 0),
+                ProductEntity("ABC-123", "מוצר", "", "", 1)
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01-05")
+
+        val rows = db.productDao().findAllBySku("ABC-123")
+        assertEquals(2, rows.size)
+        val placed = rows.single { it.location.isNotBlank() }
+        assertEquals("A-01-05", placed.location)
+        // The row that already had this code is the one that got the shelf...
+        assertEquals("111", placed.barcode)
+        // ...and the barcode-less row stays unplaced and available.
+        assertEquals(1, rows.count { it.location.isBlank() && it.barcode.isBlank() })
+    }
+
+    /** The leftover blank row is still there for the next shelf, rather than a clone being made. */
+    @Test
+    fun `a second shelf uses the remaining unplaced row`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "", 0),
+                ProductEntity("ABC-123", "מוצר", "", "", 1)
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01-05")
+        repository.updateProduct("ABC-123", "מוצר", "222", "B-02-01")
+
+        val rows = db.productDao().findAllBySku("ABC-123")
+        assertEquals(2, rows.size)
+        assertEquals(setOf("A-01-05", "B-02-01"), rows.map { it.location }.toSet())
+        assertEquals(setOf("111", "222"), rows.map { it.barcode }.toSet())
+    }
+
     @Test
     fun `updateProduct on an unknown sku is a no-op, never creates a row`() = runBlocking {
         repository.updateProduct("DOES-NOT-EXIST", "x", "1", "A-01-01")
@@ -156,6 +203,9 @@ class ProductRepositoryTest {
         db.productDao().insertAll(
             listOf(ProductEntity("ABC-123", "פילטר שמן", "111", "A-01-05", 0))
         )
+        // Inserting straight into the dao skips the registration an import or
+        // a scan would have done, and resolution runs off that table alone.
+        repository.registerBarcode("111", "ABC-123")
 
         repository.updateProduct("ABC-123", "פילטר שמן", "222", "A-01-05")
 
@@ -476,6 +526,63 @@ class ProductRepositoryTest {
         assertEquals(0, row.quantity)
     }
 
+    /**
+     * The third path that places a row, and the one that used to leak. A row
+     * arriving from the source file with a מיקום, a ברקוד *and* a quantity is
+     * an exact match for the scan that first confirms it, so it takes neither
+     * the blank-row nor the cloned-row path above and used to keep its count.
+     * That count belongs to the file, not to anyone who counted this shelf —
+     * and since the inventory screen prefills straight off this row, keeping
+     * it put the figure the file expects in front of the worker before they
+     * had counted a thing.
+     */
+    @Test
+    fun `first confirming a source-file row that already has a location empties its count`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity(
+                    "ABC-123", "מוצר", "111", "A-01", 0,
+                    ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60
+                )
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        // Same row, same spot, now confirmed by a real scan...
+        assertEquals("A-01", row.location)
+        assertEquals("111", row.barcode)
+        assertEquals(true, row.scanned)
+        // ...with nothing left on it for the worker to count against.
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+        assertEquals(0, row.packageContent)
+        assertEquals(0, row.packageCount)
+        assertEquals(0, row.looseUnits)
+        assertEquals(0, row.quantity)
+    }
+
+    /** Emptying happens on that first confirm only — a real count made afterwards stands. */
+    @Test
+    fun `a source-file row emptied on first confirm keeps the count made afterwards`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity(
+                    "ABC-123", "מוצר", "111", "A-01", 0,
+                    ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60
+                )
+            )
+        )
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+        repository.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 43)
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(43, row.quantity)
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+    }
+
     /** Re-confirming a row already at this exact spot leaves the count that was made there alone. */
     @Test
     fun `re-scanning a row at its own location keeps the quantity already counted there`() = runBlocking {
@@ -551,6 +658,33 @@ class ProductRepositoryTest {
         assertEquals(9, row.quantity)
     }
 
+    /**
+     * A count that gets questioned later has to be answerable, and neither
+     * the scanned flag nor the quantity can say when a number was put there.
+     * updateQuantity is the only thing that ever records a count, so it is
+     * the only thing that can date one.
+     */
+    @Test
+    fun `updateQuantity stamps the row with when it was counted`() = runBlocking {
+        val pinned = 1_726_000_000_000L
+        val stamped = ProductRepository(context, db.productDao(), db.barcodeDao(), prefs) { pinned }
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01", 0)))
+
+        stamped.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 43)
+
+        assertEquals(pinned, db.productDao().findAllBySku("ABC-123").single().countedAt)
+    }
+
+    /** Placing a row is not counting it — the stamp waits for a real count. */
+    @Test
+    fun `a row confirmed but not yet counted carries no stamp`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        assertEquals(0L, db.productDao().findAllBySku("ABC-123").single().countedAt)
+    }
+
     @Test
     fun `updateQuantity for a location with no row is a no-op`() = runBlocking {
         db.productDao().insertAll(
@@ -578,11 +712,154 @@ class ProductRepositoryTest {
         assertNull(repository.findRow("ABC-123", "NOWHERE", "111"))
     }
 
+    /**
+     * The same code claimed by one מקט on a product row and by another on
+     * the barcodes sheet. Only one claim can survive, so the other product's
+     * units would be counted onto the wrong מקט — the loader has to say so
+     * rather than pick quietly.
+     */
+    @Test
+    fun `a barcode two skus both claim is reported, and the sheet's owner wins`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0),
+                ProductEntity("XYZ-9", "אחר", "222", "B-02-01", 1)
+            ),
+            // The sheet says 222 belongs to ABC-123; the product row says XYZ-9.
+            listOf(BarcodeEntity(barcode = "222", sku = "ABC-123"))
+        )
+
+        val result = repository.loadFromExcel(sourceUri)
+
+        assertEquals(1, result.duplicateBarcodeRows)
+        // Named, not just counted: the warning exists to send someone to a
+        // specific row of a file with thousands of them.
+        assertEquals(listOf("222"), result.conflictingBarcodes)
+        // The sheet states ownership outright, so it is the claim that stands.
+        assertEquals("ABC-123", repository.findByBarcode("222")!!.sku)
+    }
+
+    /**
+     * One code, contested twice over: two product rows claim it *and* the
+     * barcodes sheet hands it to a third מקט. It is still one code to go and
+     * look at, so counting each claim separately would tell a worker their
+     * file is twice as broken as it is.
+     */
+    @Test
+    fun `a code contested on both sheets is reported once, not once per claim`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "222", "A-01-05", 0),
+                ProductEntity("XYZ-9", "אחר", "222", "B-02-01", 1)
+            ),
+            listOf(BarcodeEntity(barcode = "222", sku = "QRS-5"))
+        )
+
+        val result = repository.loadFromExcel(sourceUri)
+
+        assertEquals(listOf("222"), result.conflictingBarcodes)
+        assertEquals(1, result.duplicateBarcodeRows)
+    }
+
+    /** A code the sheet repeats for the same מקט is agreement, not a conflict. */
+    @Test
+    fun `a barcode both sheets agree on is not reported as a conflict`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
+            listOf(BarcodeEntity(barcode = "111", sku = "ABC-123"))
+        )
+
+        val result = repository.loadFromExcel(sourceUri)
+
+        assertEquals(0, result.duplicateBarcodeRows)
+        assertEquals("ABC-123", repository.findByBarcode("111")!!.sku)
+    }
+
+    /**
+     * The whole point of keeping a role on a code: the screens that count a
+     * shelf can ask what this scan means instead of making the worker say it
+     * again at every single scan.
+     */
+    @Test
+    fun `barcodeInfo reports what a scan of the code means`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
+            listOf(
+                BarcodeEntity(barcode = "222", sku = "ABC-123", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12)
+            )
+        )
+        repository.loadFromExcel(sourceUri)
+
+        val pack = repository.barcodeInfo("222")!!
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, pack.role)
+        assertEquals(12, pack.packageContent)
+
+        // The product's own code was seeded too, as a plain unit — nothing is
+        // guessed about packaging the file never stated.
+        val primary = repository.barcodeInfo("111")!!
+        assertEquals(BarcodeEntity.ROLE_UNIT, primary.role)
+        assertEquals(0, primary.packageContent)
+
+        assertNull(repository.barcodeInfo("nope"))
+    }
+
+    /**
+     * A code first seen at a shelf has to resolve on the next scan of it, and
+     * has to reach the barcodes working file — a second sticker found in the
+     * field is the most valuable thing a count turns up, and it used to be
+     * recorded nowhere but the product row it created.
+     */
+    @Test
+    fun `a barcode discovered mid-count is registered under its sku`() = runBlocking {
+        val sourceUri = writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "", 0)))
+        repository.loadFromExcel(sourceUri)
+
+        repository.updateProduct("ABC-123", "מוצר", "999", "A-01-05")
+
+        assertEquals("ABC-123", repository.findByBarcode("999")!!.sku)
+        // Defaults to a plain unit until someone actually says otherwise.
+        assertEquals(BarcodeEntity.ROLE_UNIT, repository.barcodeInfo("999")!!.role)
+    }
+
+    /**
+     * A role nothing recognises falls back to a plain unit, and the package
+     * content has to fall with it: a row saying בודד while carrying a carton
+     * size of 12 contradicts the rule the reader enforces on the very same
+     * data, and would quietly feed a package screen a size for a code that
+     * is not on packages.
+     */
+    @Test
+    fun `an unrecognised role drops its package content too`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+
+        repository.registerBarcode("999", "ABC-123", "קרטון", 12)
+
+        val stored = repository.barcodeInfo("999")!!
+        assertEquals(BarcodeEntity.ROLE_UNIT, stored.role)
+        assertEquals(0, stored.packageContent)
+    }
+
+    /** A code already owned by another מקט is never quietly stolen by a scan. */
+    @Test
+    fun `registering a barcode never moves it off the sku that already owns it`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0),
+                ProductEntity("XYZ-9", "אחר", "", "", 1)
+            )
+        )
+        repository.registerBarcode("111", "ABC-123")
+
+        repository.registerBarcode("111", "XYZ-9")
+
+        assertEquals("ABC-123", repository.findByBarcode("111")!!.sku)
+    }
+
     @Test
     fun `loadFromExcel also loads barcode aliases from the ברקודים כפולים sheet`() = runBlocking {
         val sourceUri = writeSourceFile(
             listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
-            listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123"))
+            listOf(BarcodeEntity(barcode = "222", sku = "ABC-123"))
         )
 
         repository.loadFromExcel(sourceUri)
@@ -593,21 +870,26 @@ class ProductRepositoryTest {
 
     /**
      * A different barcode scanned at a location the sku already has (on file,
-     * unscanned) opens its own row in the locations/quantities file rather
-     * than being recorded as a mere alias — see [ProductEntity]. The
-     * multiple-barcodes file stays empty; nothing writes to it via a normal
-     * scan anymore.
+     * unscanned) opens its own row in the locations/quantities file — the
+     * count of that shelf is per (מקט, מיקום, ברקוד), so the second code is
+     * its own line, not a footnote on the first. See [ProductEntity].
+     *
+     * The code itself is also registered, which is the whole point of
+     * discovering one mid-count: it has to resolve on the next scan, and it
+     * has to reach the multiple-barcodes file, where a second sticker found
+     * in the field is the most valuable thing a count turns up.
      */
     @Test
-    fun `a different barcode scanned at an already-known location opens its own row, not an alias`() = runBlocking {
+    fun `a different barcode scanned at an already-known location opens its own row and registers the code`() = runBlocking {
         val sourceUri = writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)))
         repository.loadFromExcel(sourceUri)
 
         repository.updateProduct("ABC-123", "מוצר", "222", "A-01-05")
         repository.saveWorkingCopies()
 
-        val aliases = barcodesFile().inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
-        assertTrue("nothing writes to the aliases file via a normal scan anymore", aliases.isEmpty())
+        val barcodes = barcodesFile().inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
+        assertEquals(setOf("111", "222"), barcodes.map { it.barcode }.toSet())
+        assertEquals("ABC-123", repository.findByBarcode("222")!!.sku)
 
         // Only the newly-scanned row shows up — the source file's own 111
         // row was never itself rescanned, so it stays out of the log.
@@ -662,11 +944,39 @@ class ProductRepositoryTest {
         assertEquals(listOf("C-03-01"), db.productDao().findAllBySku("WRONG-1").map { it.location })
     }
 
+    /**
+     * Moving a code to the right מקט must not throw away what it says about
+     * packaging. That answer can be a worker's own, given once when the code
+     * was first scanned, and it is never asked for again — the code counts
+     * as known from then on. Losing it would leave every later scan of it
+     * dividing a carton by its contents, silently.
+     */
+    @Test
+    fun `reassignBarcode keeps what the code says about packaging`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("WRONG-1", "מוצר שגוי", "111", "A-01-05", 0),
+                ProductEntity("RIGHT-1", "מוצר נכון", "", "", 1)
+            )
+        )
+        repository.registerBarcode("111", "WRONG-1", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        repository.reassignBarcode("111", "RIGHT-1")
+
+        val moved = repository.barcodeInfo("111")!!
+        // The product changed...
+        assertEquals("RIGHT-1", moved.sku)
+        // ...the carton it is stuck on did not.
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, moved.role)
+        assertEquals(12, moved.packageContent)
+    }
+
     @Test
     fun `reassignBarcode to an unknown sku is a no-op, keeping the existing link intact`() = runBlocking {
         db.productDao().insertAll(
             listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
         )
+        repository.registerBarcode("111", "ABC-123")
 
         repository.reassignBarcode("111", "DOES-NOT-EXIST")
 
@@ -831,13 +1141,13 @@ class ProductRepositoryTest {
 
     @Test
     fun `saveMultipleBarcodesFile updates only that file, leaving the locations file untouched`() = runBlocking {
-        // Aliases are no longer written by a normal scan (see ProductEntity)
-        // — the only way one exists is an externally-provided source file
-        // that already had a "ברקודים כפולים" sheet, so that's what seeds it here.
+        // The barcodes file holds every code the count knows — the product's
+        // own 111 as well as the 222 the source file's "ברקודים כפולים"
+        // sheet adds — so both are expected below.
         repository.loadFromExcel(
             writeSourceFile(
                 listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0)),
-                listOf(BarcodeAliasEntity(barcode = "222", sku = "ABC-123"))
+                listOf(BarcodeEntity(barcode = "222", sku = "ABC-123"))
             )
         )
         repository.updateProduct("ABC-123", "מוצר", "111", "B-02-01") // a new location, in memory only so far
@@ -845,8 +1155,8 @@ class ProductRepositoryTest {
 
         repository.saveMultipleBarcodesFile()
 
-        val aliases = barcodesFile().inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
-        assertEquals(listOf("222"), aliases.map { it.barcode })
+        val barcodes = barcodesFile().inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
+        assertEquals(setOf("111", "222"), barcodes.map { it.barcode }.toSet())
         assertArrayEquals("saving just the barcodes file must not rewrite the locations file", locationsSnapshot, locationsFile().readBytes())
     }
 
@@ -881,7 +1191,7 @@ class ProductRepositoryTest {
         AppDatabase.resetForTests()
         val realDb = AppDatabase.getInstance(context) // file-backed, unlike this test class's in-memory db
         val realPrefs = SessionPrefs(context)
-        val firstRunRepository = ProductRepository(context, realDb.productDao(), realDb.barcodeAliasDao(), realPrefs)
+        val firstRunRepository = ProductRepository(context, realDb.productDao(), realDb.barcodeDao(), realPrefs)
 
         firstRunRepository.loadFromExcel(writeSourceFile(listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))), "מלאי.xlsx")
         firstRunRepository.updateProduct("ABC-123", "מוצר", "111", "B-02-01")
@@ -896,7 +1206,7 @@ class ProductRepositoryTest {
         AppDatabase.resetForTests()
         val reopenedDb = AppDatabase.getInstance(context)
         val reopenedPrefs = SessionPrefs(context)
-        val reopenedRepository = ProductRepository(context, reopenedDb.productDao(), reopenedDb.barcodeAliasDao(), reopenedPrefs)
+        val reopenedRepository = ProductRepository(context, reopenedDb.productDao(), reopenedDb.barcodeDao(), reopenedPrefs)
 
         assertEquals(locationsNameBefore, reopenedPrefs.locationsQuantitiesFileName)
         assertEquals(barcodesNameBefore, reopenedPrefs.multipleBarcodesFileName)

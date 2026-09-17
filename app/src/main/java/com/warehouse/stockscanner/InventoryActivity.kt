@@ -12,6 +12,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import com.warehouse.stockscanner.data.ProductRepository
 import com.warehouse.stockscanner.excel.ExcelSaveException
@@ -70,6 +71,7 @@ class InventoryActivity : AppCompatActivity() {
     private lateinit var etPackageCount: EditText
     private lateinit var etLooseUnits: EditText
     private lateinit var tvTotalUnits: TextView
+    private lateinit var tvBarcodeRole: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +95,7 @@ class InventoryActivity : AppCompatActivity() {
         etPackageCount = findViewById(R.id.etPackageCount)
         etLooseUnits = findViewById(R.id.etLooseUnits)
         tvTotalUnits = findViewById(R.id.tvTotalUnits)
+        tvBarcodeRole = findViewById(R.id.tvBarcodeRole)
         val btnSaveInventory = findViewById<Button>(R.id.btnSaveInventory)
 
         rgQuantityType.setOnCheckedChangeListener { _, checkedId ->
@@ -148,27 +151,117 @@ class InventoryActivity : AppCompatActivity() {
         else -> ProductEntity.TYPE_UNITS
     }
 
-    /** Re-scanning the same product at the same location should show whatever quantity was already recorded. */
+    /**
+     * Opens the screen on whichever of the two has something to say.
+     *
+     * A row that was genuinely counted here before — [ProductEntity.countedAt]
+     * is set — comes back exactly as it was typed, so re-scanning a shelf is
+     * how a worker fixes their own number. That is a count someone made, not
+     * an expectation, so showing it costs the count nothing.
+     *
+     * A row with no count yet takes its shape from the scanned code instead:
+     * the mode its [BarcodeEntity.role] implies, with [packageContent]
+     * filled in. Both are packaging facts — this code is stuck on cartons of
+     * 12 — never stock figures, so the fields the worker actually counts into
+     * stay empty. That is the whole saving: a package count stops being four
+     * keystrokes and a mode choice, and nobody retypes a 12 that never
+     * changes (nor mistypes it as a 10 halfway through a count).
+     *
+     * Either way the mode stays a default and not a verdict. The radio
+     * buttons are live, and a worker who finds loose units under a code
+     * marked אריזה switches to מעורב and counts what is there — the shelf
+     * wins. That override belongs to this row alone; it never writes back to
+     * the code, since one odd shelf should not redefine a barcode for the
+     * rest of the count.
+     */
     private fun prefillFromExistingRow() {
         lifecycleScope.launch {
             val existing = repository.findRow(sku, location, barcode)
-            when (existing?.quantityType) {
-                ProductEntity.TYPE_PACKAGE, ProductEntity.TYPE_MIXED -> {
-                    val isMixed = existing.quantityType == ProductEntity.TYPE_MIXED
-                    if (isMixed) rbMixed.isChecked = true else rbPackage.isChecked = true
-                    etPackageContent.setText(existing.packageContent.takeIf { it != 0 }?.toString() ?: "")
-                    etPackageCount.setText(existing.packageCount.takeIf { it != 0 }?.toString() ?: "")
-                    if (isMixed) etLooseUnits.setText(existing.looseUnits.takeIf { it != 0 }?.toString() ?: "")
-                }
-                else -> {
-                    rbUnits.isChecked = true
-                    etQuantity.setText(existing?.quantity?.takeIf { it != 0 }?.toString() ?: "")
-                }
+            val barcodeInfo = repository.barcodeInfo(barcode)
+            showBarcodeRole(barcodeInfo)
+
+            if (existing != null && existing.wasCountedHere()) {
+                applyCountedRow(existing)
+            } else {
+                applyBarcodeDefault(barcodeInfo)
             }
             updateFieldVisibility(rgQuantityType.checkedRadioButtonId)
             recalcTotalUnits()
             prefilled = true
         }
+    }
+
+    /**
+     * Whether this row carries a count someone actually made here.
+     *
+     * [ProductEntity.countedAt] is the direct answer, but it only exists from
+     * v8 on: a database that upgraded mid-count has 0 there for rows that
+     * were genuinely counted before the upgrade, and shaping the screen from
+     * the barcode instead would drop a worker's own number in front of them.
+     * Carrying a non-zero count is the other way to tell, and it is only
+     * reliable because every path in ProductRepository.updateProduct empties
+     * a row it is placing for the first time — including the one that
+     * confirms a row the source file already gave a מיקום, a ברקוד and a
+     * quantity. Without that last one this fallback would read the file's
+     * expected figure as a count and put it straight in front of the worker,
+     * so this screen depends on it rather than merely benefiting from it.
+     *
+     * The one case this misses is a shelf genuinely counted as zero before
+     * an upgrade, which reads as uncounted. countedAt covers it from here on.
+     */
+    private fun ProductEntity.wasCountedHere(): Boolean =
+        countedAt > 0L || quantity > 0 || packageCount > 0 || looseUnits > 0
+
+    /** A count really made at this shelf, restored exactly as it was typed. */
+    private fun applyCountedRow(existing: ProductEntity) {
+        when (existing.quantityType) {
+            ProductEntity.TYPE_PACKAGE, ProductEntity.TYPE_MIXED -> {
+                val isMixed = existing.quantityType == ProductEntity.TYPE_MIXED
+                if (isMixed) rbMixed.isChecked = true else rbPackage.isChecked = true
+                etPackageContent.setText(existing.packageContent.takeIf { it != 0 }?.toString() ?: "")
+                etPackageCount.setText(existing.packageCount.takeIf { it != 0 }?.toString() ?: "")
+                if (isMixed) etLooseUnits.setText(existing.looseUnits.takeIf { it != 0 }?.toString() ?: "")
+            }
+            else -> {
+                rbUnits.isChecked = true
+                etQuantity.setText(existing.quantity.takeIf { it != 0 }?.toString() ?: "")
+            }
+        }
+    }
+
+    /**
+     * Nothing counted here yet: shape the screen from the code's packaging
+     * and leave every counting field empty. An unknown code falls back to
+     * plain units, which is what the screen always did.
+     */
+    private fun applyBarcodeDefault(info: BarcodeEntity?) {
+        when (info?.role) {
+            BarcodeEntity.ROLE_PACKAGE -> rbPackage.isChecked = true
+            BarcodeEntity.ROLE_MIXED -> rbMixed.isChecked = true
+            else -> rbUnits.isChecked = true
+        }
+        val content = info?.packageContent?.takeIf { it > 0 }?.toString().orEmpty()
+        etPackageContent.setText(content)
+        etPackageCount.setText("")
+        etLooseUnits.setText("")
+        etQuantity.setText("")
+    }
+
+    /** Says what was scanned, so the worker can tell a carton code from a single-unit one. */
+    private fun showBarcodeRole(info: BarcodeEntity?) {
+        val label = when (info?.role) {
+            BarcodeEntity.ROLE_PACKAGE -> "ברקוד אריזה"
+            BarcodeEntity.ROLE_MIXED -> "ברקוד אריזה ובודד"
+            BarcodeEntity.ROLE_UNIT -> "ברקוד בודד"
+            else -> null
+        }
+        if (info == null || label == null) {
+            tvBarcodeRole.visibility = View.GONE
+            return
+        }
+        val content = info.packageContent.takeIf { it > 0 }
+        tvBarcodeRole.text = if (content != null) "$label · $content יח׳ באריזה" else label
+        tvBarcodeRole.visibility = View.VISIBLE
     }
 
     private fun recalcTotalUnits() {

@@ -30,8 +30,10 @@ data class ProductLookup(
 class ProductRepository(
     private val context: Context,
     private val dao: ProductDao,
-    private val aliasDao: BarcodeAliasDao,
-    private val prefs: SessionPrefs
+    private val barcodeDao: BarcodeDao,
+    private val prefs: SessionPrefs,
+    /** Overridable so a test can pin the [ProductEntity.countedAt] stamp instead of racing the wall clock. */
+    private val now: () -> Long = System::currentTimeMillis
 ) {
 
     /**
@@ -61,8 +63,21 @@ class ProductRepository(
         val result = ExcelReader.readProducts(context, uri)
         dao.clearAll()
         dao.insertAll(result.products)
-        aliasDao.clearAll()
-        aliasDao.insertAll(result.barcodeAliases)
+        barcodeDao.clearAll()
+        // The barcodes sheet first: it states outright which מקט owns a code,
+        // and says what a scan of it means. A products.barcode only implies
+        // ownership by sitting on a row, so it fills gaps rather than
+        // overriding — insert's IGNORE keeps the explicit one. Seeding both
+        // is what lets a scan resolve from this table alone, and leaves a
+        // freshly loaded file agreeing with a database that got here by
+        // migration instead.
+        barcodeDao.insertAll(result.barcodes)
+        barcodeDao.insertAll(
+            result.products
+                .filter { it.barcode.isNotBlank() }
+                .distinctBy { it.barcode }
+                .map { BarcodeEntity(barcode = it.barcode, sku = it.sku) }
+        )
 
         val name = originalFileName ?: uri.lastPathSegment ?: DEFAULT_ORIGINAL_FILE_NAME
         prefs.resetForNewFile(name, uri.toString())
@@ -91,14 +106,77 @@ class ProductRepository(
     /**
      * Resolves [barcode] to its product, checking the product's own (primary)
      * ברקוד first and, if nothing matches there, the extra barcodes aliased
-     * to a sku via [BarcodeAliasEntity] — several different physical codes
+     * to a sku via [BarcodeEntity] — several different physical codes
      * can point at the very same product.
      */
     suspend fun findByBarcode(barcode: String): ProductLookup? {
         val trimmed = barcode.trim()
         if (trimmed.isEmpty()) return null
-        val sku = dao.findByBarcode(trimmed)?.sku ?: aliasDao.findSkuByBarcode(trimmed) ?: return null
+        val sku = barcodeDao.findSkuByBarcode(trimmed) ?: return null
         return lookupFor(sku)
+    }
+
+    /**
+     * What a scan of [barcode] says about packaging, or null for a code this
+     * count has never seen. The confirm and inventory screens ask for this so
+     * a shelf's count can default to how the code is actually stickered
+     * instead of making the worker restate it at every scan.
+     */
+    suspend fun barcodeInfo(barcode: String): BarcodeEntity? {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty()) return null
+        return barcodeDao.findByBarcode(trimmed)
+    }
+
+    /**
+     * Describes a ברקוד already on file — what a scan of it means. Separate
+     * from [registerBarcode] because that one deliberately never overwrites
+     * an existing row: a scan must not silently move a code between מקטים,
+     * whereas a worker answering "what is this sticker on?" is saying exactly
+     * what this code means and should be taken at their word.
+     *
+     * Only the packaging changes; the מקט the code belongs to never does.
+     */
+    suspend fun setBarcodeRole(barcode: String, role: String, packageContent: Int) {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty() || role !in BarcodeEntity.ROLES) return
+        barcodeDao.setRole(
+            trimmed,
+            role,
+            if (role == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
+        )
+    }
+
+    /**
+     * Records a ברקוד discovered mid-count — one that was scanned at a shelf
+     * without ever appearing in the source file. Without this the code would
+     * live only on the product row it created and resolve nowhere on the next
+     * scan, and it would never reach the multiple-barcodes working file,
+     * losing exactly the discovery a count is most valuable for. Registering
+     * it under a [role] the worker chose beats guessing, but an unregistered
+     * code still defaults to a plain single unit rather than blocking a scan.
+     */
+    suspend fun registerBarcode(
+        barcode: String,
+        sku: String,
+        role: String = BarcodeEntity.ROLE_UNIT,
+        packageContent: Int = 0
+    ) {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty() || sku.isBlank()) return
+        // Both fields decided from the sanitised role, not the raw argument:
+        // an unrecognised one falls back to a plain unit, and a package
+        // content kept beside it would contradict the very rule the reader
+        // enforces — a unit has no package to hold anything.
+        val safeRole = role.takeIf { it in BarcodeEntity.ROLES } ?: BarcodeEntity.ROLE_UNIT
+        barcodeDao.insert(
+            BarcodeEntity(
+                barcode = trimmed,
+                sku = sku,
+                role = safeRole,
+                packageContent = if (safeRole == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
+            )
+        )
     }
 
     suspend fun findBySku(sku: String): ProductLookup? = lookupFor(sku)
@@ -139,8 +217,11 @@ class ProductRepository(
      * starts empty rather than inheriting a count that belongs to some other
      * shelf, or one that merely rode in on the source file. Only
      * [updateQuantity], driven by the inventory screen, ever puts a count on
-     * a row. Re-confirming a row that is already at this exact (location,
-     * barcode) leaves its count alone — that one really was counted here.
+     * a row. Re-confirming a row that has already been scanned at this exact
+     * (location, barcode) leaves its count alone — that one really was
+     * counted here; a row carrying a location and barcode straight from the
+     * source file has not been, so the first scan to confirm it empties its
+     * count like any other first placement.
      * Never creates a row for an unknown sku.
      *
      * The row this ends up touching is also marked [ProductEntity.scanned]
@@ -155,6 +236,12 @@ class ProductRepository(
         if (rowsBeforeSync.isEmpty()) return
         val trimmedLocation = newLocation.trim()
         val trimmedBarcode = newBarcode.trim()
+
+        // Resolution now runs off the barcodes table alone, so a code first
+        // seen at a shelf has to land there or the very next scan of it finds
+        // nothing. IGNORE inside the dao means a code already owned by
+        // another מקט is left where it is rather than stolen.
+        registerBarcode(trimmedBarcode, sku)
 
         // Kept in sync with the DB writes below it, not just the DB itself —
         // every subsequent .copy() in this function starts from a row here,
@@ -172,20 +259,46 @@ class ProductRepository(
         if (exactMatch != null) {
             // This exact (location, barcode) combination was already on
             // record — this scan simply re-confirms it, so it must be marked
-            // scanned even if nothing else about it changed just now.
-            if (!exactMatch.scanned) dao.update(exactMatch.copy(scanned = true))
+            // scanned even if nothing else about it changed just now. A row
+            // that has never been scanned in this app is only being counted
+            // here for the first time, though, so its count starts empty
+            // exactly like the two placement paths below: whatever quantity
+            // it carries rode in on the source file, and the inventory screen
+            // prefills from this row — keeping it would show the worker the
+            // figure the file expects before they have counted anything.
+            if (!exactMatch.scanned) {
+                dao.update(
+                    exactMatch.copy(
+                        quantityType = ProductEntity.TYPE_UNITS,
+                        packageContent = 0,
+                        packageCount = 0,
+                        looseUnits = 0,
+                        quantity = 0,
+                        scanned = true
+                    )
+                )
+            }
             return
         }
 
-        // A single not-yet-placed row (no location yet) whose barcode either
+        // A not-yet-placed row (no location yet) whose barcode either
         // isn't known yet or already matches this scan just gets the
         // location filled in, instead of being left behind as an orphaned
         // blank row alongside a new one this scan would otherwise create —
         // covers both a genuinely fresh catalog entry (blank barcode too)
         // and a product whose barcode was already known but never shelved.
-        val blankRow = existingRows.singleOrNull {
-            it.location.isBlank() && (it.barcode.isBlank() || it.barcode == trimmedBarcode)
-        }
+        // Two candidates can coexist: an unplaced row already carrying this
+        // ברקוד, and an unplaced row with none. (Two rows with nothing in
+        // both columns cannot — the unique index on sku+location+barcode
+        // forbids it.) Demanding exactly one match made such a scan clone a
+        // third row instead, stranding both originals for the rest of the
+        // count and adding a row no shelf and no scan ever accounted for.
+        //
+        // The row already carrying this code is the better home for it, so
+        // it is tried first; a blank-barcode row is the fallback, which is
+        // what the single-candidate case always did.
+        val blankRow = existingRows.firstOrNull { it.location.isBlank() && it.barcode == trimmedBarcode }
+            ?: existingRows.firstOrNull { it.location.isBlank() && it.barcode.isBlank() }
         if (blankRow != null) {
             // Placed for the first time, so its count starts here too. A
             // quantity that rode in on the source file was never counted at
@@ -260,8 +373,23 @@ class ProductRepository(
         if (wrongRow.sku == newSku) return
 
         val newDescription = newRows.first().description
+        // What the code means physically is not in question here — only
+        // which product it belongs to. The sticker is still on the same
+        // carton of twelve whoever owns it, and re-registration below would
+        // otherwise reset it to a plain single unit. That answer can be a
+        // worker's own, given once when the code was first seen, and it
+        // would not be asked for again: the code counts as known from then
+        // on, so every later scan would quietly divide the carton by its
+        // contents.
+        val packaging = barcodeDao.findByBarcode(trimmed)
         removeFromLocation(wrongRow)
+        // The code itself has to change hands too, or it would keep
+        // resolving to the מקט this call exists to move it away from.
+        barcodeDao.deleteByBarcode(trimmed)
         updateProduct(newSku, newDescription, trimmed, wrongRow.location)
+        if (packaging != null && packaging.role != BarcodeEntity.ROLE_UNIT) {
+            setBarcodeRole(trimmed, packaging.role, packaging.packageContent)
+        }
     }
 
     /** The exact row for [sku] at [location] with [barcode] — used by the inventory screen to prefill an existing quantity. */
@@ -277,6 +405,9 @@ class ProductRepository(
      * the inventory screen can prefill exactly what was typed. Never creates
      * a row: the (location, barcode) combination must already have been
      * confirmed via [updateProduct] first.
+     *
+     * Stamps [ProductEntity.countedAt] — this is the only place a count is
+     * ever recorded, so it is the only place that can date one.
      */
     suspend fun updateQuantity(
         sku: String,
@@ -295,7 +426,8 @@ class ProductRepository(
                 packageContent = packageContent,
                 packageCount = packageCount,
                 looseUnits = looseUnits,
-                quantity = quantity
+                quantity = quantity,
+                countedAt = now()
             )
         )
     }
@@ -397,7 +529,7 @@ class ProductRepository(
     }
 
     private suspend fun writeMultipleBarcodesFile(fileName: String) {
-        val aliases = aliasDao.getAll()
+        val aliases = barcodeDao.getAll()
         val products = dao.getAllOrdered()
         val file = File(context.filesDir, fileName)
         try {

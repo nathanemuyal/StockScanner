@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:layoutDirection="rtl"
@@ -19,6 +20,21 @@
             android:textStyle="bold"
             android:gravity="center"
             android:layout_marginBottom="24dp" />
+
+        <!-- What the scanned code says about packaging. Hidden for a code
+             the count has never seen, so nothing is asserted about it. -->
+        <TextView
+            android:id="@+id/tvBarcodeRole"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:padding="12dp"
+            android:layout_marginBottom="16dp"
+            android:background="@color/color_surface"
+            android:visibility="gone"
+            tools:text="ברקוד אריזה · 12 יח׳ באריזה" />
 
         <TextView
             android:layout_width="match_parent"

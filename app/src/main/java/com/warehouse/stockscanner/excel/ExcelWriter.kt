@@ -1,6 +1,6 @@
 package com.warehouse.stockscanner.excel
 
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import java.io.BufferedOutputStream
 import java.io.OutputStream
@@ -34,6 +34,7 @@ object ExcelWriter {
     private const val COL_PACKAGE_COUNT = "כמות אריזות"
     private const val COL_LOOSE_UNITS = "יחידות בודדות"
     private const val COL_QUANTITY = "כמות יחידות"
+    private const val COL_COUNTED_AT = "נספר בתאריך"
 
     private const val COL_SUMMARY_TOTAL = "סה״כ יחידות"
     private const val SUMMARY_TOTAL_LABEL = "סה״כ"
@@ -42,23 +43,41 @@ object ExcelWriter {
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
+    private const val COL_BARCODE_ROLE = "תפקיד"
+    private const val COL_BARCODE_CONTENT = "תכולה"
 
     // COL_LOOSE_UNITS sits between the package breakdown it belongs to and
     // the COL_QUANTITY total it feeds into: in "מעורב" mode the shelf holds
     // whole packages *and* loose singles, and the total is the sum of both.
     private val PRODUCT_HEADERS = listOf(
         COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION,
-        COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_LOOSE_UNITS, COL_QUANTITY
+        COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_LOOSE_UNITS, COL_QUANTITY,
+        COL_COUNTED_AT
     )
 
     private val SUMMARY_HEADERS = listOf(COL_SKU, COL_DESCRIPTION, COL_LOCATION, COL_SUMMARY_TOTAL)
 
-    // Order matches the task spec's example: מק"ט, תיאור, ברקוד.
-    private val MULTIPLE_BARCODES_HEADERS = listOf(COL_ALIAS_SKU, COL_DESCRIPTION, COL_ALIAS_BARCODE)
+    /**
+     * Written for a person to read, not for a machine to round-trip: a count
+     * that gets questioned is settled by someone looking at two rows and
+     * asking which is the fresh one, and epoch millis answer nobody. Minutes
+     * are as fine as that argument ever gets, so seconds are dropped. The
+     * database keeps the exact stamp either way.
+     */
+    private val COUNTED_AT_FORMAT = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+
+    /** Blank for a row nothing has counted — 0 is not a date, and 1970 on a shelf report is noise. */
+    private fun formatCountedAt(countedAt: Long): String =
+        if (countedAt > 0L) COUNTED_AT_FORMAT.format(java.util.Date(countedAt)) else ""
+
+    // Order matches the task spec's example: מק"ט, תיאור, ברקוד — then what
+    // a scan of that code means, which is the point of keeping the sheet.
+    private val MULTIPLE_BARCODES_HEADERS =
+        listOf(COL_ALIAS_SKU, COL_DESCRIPTION, COL_ALIAS_BARCODE, COL_BARCODE_ROLE, COL_BARCODE_CONTENT)
 
     /**
      * Core writing logic, decoupled from Context/Uri so it can also be driven
-     * directly against a plain OutputStream (e.g. in tests). [aliases] are
+     * directly against a plain OutputStream (e.g. in tests). [barcodes] are
      * extra barcodes attached to a sku that already has its own (primary)
      * ברקוד — written as a second worksheet ("ברקודים כפולים") rather than
      * extra columns on the product rows, since an alias isn't tied to any
@@ -67,14 +86,14 @@ object ExcelWriter {
     fun writeProductsToStream(
         output: OutputStream,
         products: List<ProductEntity>,
-        aliases: List<BarcodeAliasEntity> = emptyList()
+        barcodes: List<BarcodeEntity> = emptyList()
     ) {
         val ordered = products.sortedBy { it.rowOrder }
 
         writeTwoSheetPackage(
             output,
             PRODUCT_HEADERS, productRows(ordered),
-            BARCODES_SHEET_NAME, MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, ordered)
+            BARCODES_SHEET_NAME, MULTIPLE_BARCODES_HEADERS, barcodeRows(barcodes, ordered)
         )
     }
 
@@ -132,29 +151,49 @@ object ExcelWriter {
 
     /**
      * The "multiple barcodes per מקט" working file: every extra ברקוד
-     * aliased to a sku that already has its own primary one, alongside that
-     * sku's description for readability (looked up from [products], not
-     * stored redundantly on [BarcodeAliasEntity] itself).
+     * belonging to a sku, alongside that sku's description for readability
+     * (looked up from [products], not stored redundantly on [BarcodeEntity]
+     * itself).
+     *
+     * Note this is every code the count knows, not only the extra ones. The
+     * table behind it now holds a product's own primary code too, so on a
+     * database that reached v8 by migration this file gains a row per
+     * primary barcode — it grows, and the name "multiple barcodes" describes
+     * what it was first needed for rather than what it holds.
      */
     fun writeMultipleBarcodesToStream(
         output: OutputStream,
-        aliases: List<BarcodeAliasEntity>,
+        barcodes: List<BarcodeEntity>,
         products: List<ProductEntity>
     ) {
-        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, products))
+        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, barcodeRows(barcodes, products))
     }
 
     private fun productRows(products: List<ProductEntity>): List<List<String>> = products.map { p ->
         listOf(
             p.sku, p.description, p.barcode, p.location,
             p.quantityType, p.packageContent.toString(), p.packageCount.toString(),
-            p.looseUnits.toString(), p.quantity.toString()
+            p.looseUnits.toString(), p.quantity.toString(),
+            formatCountedAt(p.countedAt)
         )
     }
 
-    private fun aliasRows(aliases: List<BarcodeAliasEntity>, products: List<ProductEntity>): List<List<String>> {
+    private fun barcodeRows(barcodes: List<BarcodeEntity>, products: List<ProductEntity>): List<List<String>> {
         val descriptionBySku = products.groupBy { it.sku }.mapValues { (_, rows) -> rows.first().description }
-        return aliases.map { alias -> listOf(alias.sku, descriptionBySku[alias.sku].orEmpty(), alias.barcode) }
+        return barcodes.map { barcode ->
+            listOf(
+                barcode.sku,
+                descriptionBySku[barcode.sku].orEmpty(),
+                barcode.barcode,
+                barcode.role,
+                // Blank rather than 0 for a code on a single unit: there is no
+                // package, so there is no number to state. Most of this file is
+                // such codes, and a column of zeroes reads as a real figure
+                // somebody should be looking at. The reader ignores the cell
+                // under בודד either way, so nothing round-trips differently.
+                barcode.packageContent.takeIf { it > 0 }?.toString().orEmpty()
+            )
+        }
     }
 
     private fun writeEntry(zip: ZipOutputStream, name: String, content: String) {
