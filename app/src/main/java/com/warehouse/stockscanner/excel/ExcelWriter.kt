@@ -35,6 +35,11 @@ object ExcelWriter {
     private const val COL_LOOSE_UNITS = "יחידות בודדות"
     private const val COL_QUANTITY = "כמות יחידות"
 
+    private const val COL_SUMMARY_TOTAL = "סה״כ יחידות"
+    private const val SUMMARY_TOTAL_LABEL = "סה״כ"
+    private const val SUMMARY_SHEET_NAME = "סיכום"
+    private const val BARCODES_SHEET_NAME = "ברקודים כפולים"
+
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
 
@@ -45,6 +50,8 @@ object ExcelWriter {
         COL_SKU, COL_DESCRIPTION, COL_BARCODE, COL_LOCATION,
         COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_LOOSE_UNITS, COL_QUANTITY
     )
+
+    private val SUMMARY_HEADERS = listOf(COL_SKU, COL_DESCRIPTION, COL_LOCATION, COL_SUMMARY_TOTAL)
 
     // Order matches the task spec's example: מק"ט, תיאור, ברקוד.
     private val MULTIPLE_BARCODES_HEADERS = listOf(COL_ALIAS_SKU, COL_DESCRIPTION, COL_ALIAS_BARCODE)
@@ -64,28 +71,56 @@ object ExcelWriter {
     ) {
         val ordered = products.sortedBy { it.rowOrder }
 
-        BufferedOutputStream(output).use { buffered ->
-            ZipOutputStream(buffered).use { zip ->
-                writeEntry(zip, "[Content_Types].xml", contentTypesXml(twoSheets = true))
-                writeEntry(zip, "_rels/.rels", relsXml())
-                writeEntry(zip, "xl/workbook.xml", workbookXml())
-                writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml(twoSheets = true))
-                writeEntry(zip, "xl/styles.xml", stylesXml())
-                writeEntry(zip, "xl/worksheets/sheet1.xml", genericSheetXml(PRODUCT_HEADERS, productRows(ordered)))
-                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, ordered)))
-            }
-        }
+        writeTwoSheetPackage(
+            output,
+            PRODUCT_HEADERS, productRows(ordered),
+            BARCODES_SHEET_NAME, MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, ordered)
+        )
     }
 
     /**
      * The "locations + quantities" working file: sku, description, barcode,
-     * location and the quantity breakdown — one row per (sku, location), same
-     * shape as this app's product table itself (see
-     * [com.warehouse.stockscanner.data.ProductEntity]).
+     * location and the quantity breakdown — one row per scan, same shape as
+     * this app's product table itself (see
+     * [com.warehouse.stockscanner.data.ProductEntity]) — plus a "סיכום"
+     * sheet that adds those rows up.
+     *
+     * The summary is not a convenience. A shelf legitimately produces more
+     * than one row for the same מקט — a package barcode and a single-unit
+     * barcode are counted separately, and each gets its own row — so
+     * "how many are there" is a question the detail sheet cannot answer
+     * without someone adding rows up by hand. The detail sheet stays exactly
+     * as it was: it is the audit trail showing how each total was reached.
      */
     fun writeLocationsQuantitiesToStream(output: OutputStream, products: List<ProductEntity>) {
         val ordered = products.sortedBy { it.rowOrder }
-        writeSingleSheetPackage(output, PRODUCT_HEADERS, productRows(ordered))
+        writeTwoSheetPackage(
+            output,
+            PRODUCT_HEADERS, productRows(ordered),
+            SUMMARY_SHEET_NAME, SUMMARY_HEADERS, summaryRows(ordered)
+        )
+    }
+
+    /**
+     * One row per (מקט, מיקום) with its unit total, followed by a total row
+     * for the מקט itself. Quantities are already stored in single units
+     * whichever mode they were entered in, so this is a plain sum — the
+     * arithmetic that turns packages into units happened when the count was
+     * recorded, not here.
+     *
+     * Skus keep the order they appear in the detail sheet, and locations the
+     * order they were counted in, so the two sheets read side by side.
+     */
+    private fun summaryRows(products: List<ProductEntity>): List<List<String>> {
+        val rows = mutableListOf<List<String>>()
+        for ((sku, skuRows) in products.groupBy { it.sku }) {
+            val description = skuRows.first().description
+            for ((location, locationRows) in skuRows.groupBy { it.location }) {
+                rows += listOf(sku, description, location, locationRows.sumOf { it.quantity }.toString())
+            }
+            rows += listOf(sku, description, SUMMARY_TOTAL_LABEL, skuRows.sumOf { it.quantity }.toString())
+        }
+        return rows
     }
 
     /**
@@ -179,6 +214,27 @@ object ExcelWriter {
     }
 
     /** A complete, valid single-sheet .xlsx package containing just [headers]/[rows]. */
+    private fun writeTwoSheetPackage(
+        output: OutputStream,
+        headers: List<String>,
+        rows: List<List<String>>,
+        secondSheetName: String,
+        secondHeaders: List<String>,
+        secondRows: List<List<String>>
+    ) {
+        BufferedOutputStream(output).use { buffered ->
+            ZipOutputStream(buffered).use { zip ->
+                writeEntry(zip, "[Content_Types].xml", contentTypesXml(twoSheets = true))
+                writeEntry(zip, "_rels/.rels", relsXml())
+                writeEntry(zip, "xl/workbook.xml", workbookXml(secondSheetName))
+                writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml(twoSheets = true))
+                writeEntry(zip, "xl/styles.xml", stylesXml())
+                writeEntry(zip, "xl/worksheets/sheet1.xml", genericSheetXml(headers, rows))
+                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(secondHeaders, secondRows))
+            }
+        }
+    }
+
     private fun writeSingleSheetPackage(output: OutputStream, headers: List<String>, rows: List<List<String>>) {
         BufferedOutputStream(output).use { buffered ->
             ZipOutputStream(buffered).use { zip ->
@@ -218,12 +274,12 @@ object ExcelWriter {
         </Relationships>
     """.trimIndent()
 
-    private fun workbookXml(): String = """
+    private fun workbookXml(secondSheetName: String): String = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
         <sheets>
         <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
-        <sheet name="ברקודים כפולים" sheetId="2" r:id="rId3"/>
+        <sheet name="${escapeXml(secondSheetName)}" sheetId="2" r:id="rId3"/>
         </sheets>
         </workbook>
     """.trimIndent()
