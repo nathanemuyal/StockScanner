@@ -198,8 +198,11 @@ class ProductRepository(
      * starts empty rather than inheriting a count that belongs to some other
      * shelf, or one that merely rode in on the source file. Only
      * [updateQuantity], driven by the inventory screen, ever puts a count on
-     * a row. Re-confirming a row that is already at this exact (location,
-     * barcode) leaves its count alone — that one really was counted here.
+     * a row. Re-confirming a row that has already been scanned at this exact
+     * (location, barcode) leaves its count alone — that one really was
+     * counted here; a row carrying a location and barcode straight from the
+     * source file has not been, so the first scan to confirm it empties its
+     * count like any other first placement.
      * Never creates a row for an unknown sku.
      *
      * The row this ends up touching is also marked [ProductEntity.scanned]
@@ -237,8 +240,25 @@ class ProductRepository(
         if (exactMatch != null) {
             // This exact (location, barcode) combination was already on
             // record — this scan simply re-confirms it, so it must be marked
-            // scanned even if nothing else about it changed just now.
-            if (!exactMatch.scanned) dao.update(exactMatch.copy(scanned = true))
+            // scanned even if nothing else about it changed just now. A row
+            // that has never been scanned in this app is only being counted
+            // here for the first time, though, so its count starts empty
+            // exactly like the two placement paths below: whatever quantity
+            // it carries rode in on the source file, and the inventory screen
+            // prefills from this row — keeping it would show the worker the
+            // figure the file expects before they have counted anything.
+            if (!exactMatch.scanned) {
+                dao.update(
+                    exactMatch.copy(
+                        quantityType = ProductEntity.TYPE_UNITS,
+                        packageContent = 0,
+                        packageCount = 0,
+                        looseUnits = 0,
+                        quantity = 0,
+                        scanned = true
+                    )
+                )
+            }
             return
         }
 

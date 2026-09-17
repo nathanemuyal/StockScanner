@@ -479,6 +479,63 @@ class ProductRepositoryTest {
         assertEquals(0, row.quantity)
     }
 
+    /**
+     * The third path that places a row, and the one that used to leak. A row
+     * arriving from the source file with a מיקום, a ברקוד *and* a quantity is
+     * an exact match for the scan that first confirms it, so it takes neither
+     * the blank-row nor the cloned-row path above and used to keep its count.
+     * That count belongs to the file, not to anyone who counted this shelf —
+     * and since the inventory screen prefills straight off this row, keeping
+     * it put the figure the file expects in front of the worker before they
+     * had counted a thing.
+     */
+    @Test
+    fun `first confirming a source-file row that already has a location empties its count`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity(
+                    "ABC-123", "מוצר", "111", "A-01", 0,
+                    ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60
+                )
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        // Same row, same spot, now confirmed by a real scan...
+        assertEquals("A-01", row.location)
+        assertEquals("111", row.barcode)
+        assertEquals(true, row.scanned)
+        // ...with nothing left on it for the worker to count against.
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+        assertEquals(0, row.packageContent)
+        assertEquals(0, row.packageCount)
+        assertEquals(0, row.looseUnits)
+        assertEquals(0, row.quantity)
+    }
+
+    /** Emptying happens on that first confirm only — a real count made afterwards stands. */
+    @Test
+    fun `a source-file row emptied on first confirm keeps the count made afterwards`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity(
+                    "ABC-123", "מוצר", "111", "A-01", 0,
+                    ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60
+                )
+            )
+        )
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+        repository.updateQuantity("ABC-123", "A-01", "111", ProductEntity.TYPE_UNITS, 0, 0, 0, 43)
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01")
+
+        val row = db.productDao().findAllBySku("ABC-123").single()
+        assertEquals(43, row.quantity)
+        assertEquals(ProductEntity.TYPE_UNITS, row.quantityType)
+    }
+
     /** Re-confirming a row already at this exact spot leaves the count that was made there alone. */
     @Test
     fun `re-scanning a row at its own location keeps the quantity already counted there`() = runBlocking {
