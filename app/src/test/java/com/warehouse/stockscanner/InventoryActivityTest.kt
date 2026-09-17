@@ -10,6 +10,7 @@ import android.widget.RadioButton
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
 import com.warehouse.stockscanner.data.AppDatabase
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -61,6 +62,15 @@ class InventoryActivityTest {
 
     private fun insertRow(row: ProductEntity) {
         runBlocking { AppDatabase.getInstance(context).productDao().insertAll(listOf(row)) }
+    }
+
+    /** Puts a code on file with the packaging it carries, as an import or a first scan would. */
+    private fun registerBarcode(barcode: String, sku: String, role: String, packageContent: Int = 0) {
+        runBlocking {
+            AppDatabase.getInstance(context).barcodeDao().insert(
+                BarcodeEntity(barcode = barcode, sku = sku, role = role, packageContent = packageContent)
+            )
+        }
     }
 
     private fun controllerFor(
@@ -419,5 +429,91 @@ class InventoryActivityTest {
         } finally {
             target.delete()
         }
+    }
+
+    /**
+     * A package code opens straight into package mode with the carton size
+     * already in, so the worker answers one question — how many cartons —
+     * instead of choosing a mode and retyping a 12 that never changes.
+     */
+    @Test
+    fun `a package barcode opens in package mode with the carton size filled in`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "222", "A-01-05", 0, scanned = true))
+        registerBarcode("222", "ABC-123", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        val activity = launch("ABC-123", "A-01-05", "222")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbPackage).isChecked }
+
+        assertEquals("12", activity.findViewById<EditText>(R.id.etPackageContent).text.toString())
+        // The counting field itself stays empty — packaging is a fact about
+        // the carton, a count is not.
+        assertEquals("", activity.findViewById<EditText>(R.id.etPackageCount).text.toString())
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.tvBarcodeRole).visibility)
+    }
+
+    /** One code on both cartons and loose singles opens both fields at once. */
+    @Test
+    fun `a mixed barcode opens with both the package and the loose fields`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "333", "A-01-05", 0, scanned = true))
+        registerBarcode("333", "ABC-123", BarcodeEntity.ROLE_MIXED, 6)
+
+        val activity = launch("ABC-123", "A-01-05", "333")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbMixed).isChecked }
+
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.groupLoose).visibility)
+        assertEquals("6", activity.findViewById<EditText>(R.id.etPackageContent).text.toString())
+        assertEquals("", activity.findViewById<EditText>(R.id.etPackageCount).text.toString())
+        assertEquals("", activity.findViewById<EditText>(R.id.etLooseUnits).text.toString())
+    }
+
+    /** A code nobody has described yet behaves exactly as the screen always did. */
+    @Test
+    fun `an unknown barcode still opens in units mode and says nothing about packaging`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0, scanned = true))
+
+        val activity = launch("ABC-123", "A-01-05", "111")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        assertEquals(View.GONE, activity.findViewById<View>(R.id.tvBarcodeRole).visibility)
+        assertEquals("", activity.findViewById<EditText>(R.id.etQuantity).text.toString())
+    }
+
+    /**
+     * The code proposes, the shelf decides. A worker who finds loose units
+     * under a carton code switches mode and counts what is actually there.
+     */
+    @Test
+    fun `the worker can override the mode the barcode implied`() {
+        insertRow(ProductEntity("ABC-123", "מוצר", "222", "A-01-05", 0, scanned = true))
+        registerBarcode("222", "ABC-123", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        val activity = launch("ABC-123", "A-01-05", "222")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbPackage).isChecked }
+
+        activity.findViewById<RadioButton>(R.id.rbMixed).performClick()
+        awaitUntil { activity.findViewById<View>(R.id.groupLoose).visibility == View.VISIBLE }
+
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.groupLoose).visibility)
+    }
+
+    /**
+     * A count already made here outranks the code's default — re-scanning a
+     * shelf is how a worker corrects their own number, and that number was
+     * made by a person rather than expected by a file.
+     */
+    @Test
+    fun `a count already made here wins over the barcode's default`() {
+        insertRow(
+            ProductEntity(
+                "ABC-123", "מוצר", "222", "A-01-05", 0,
+                ProductEntity.TYPE_UNITS, 0, 0, 0, quantity = 43, scanned = true, countedAt = 1_726_000_000_000L
+            )
+        )
+        registerBarcode("222", "ABC-123", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        val activity = launch("ABC-123", "A-01-05", "222")
+        awaitUntil { activity.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        assertEquals("43", activity.findViewById<EditText>(R.id.etQuantity).text.toString())
     }
 }
