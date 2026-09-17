@@ -64,7 +64,20 @@ class ProductRepository(
         dao.clearAll()
         dao.insertAll(result.products)
         barcodeDao.clearAll()
+        // The barcodes sheet first: it states outright which מקט owns a code,
+        // and says what a scan of it means. A products.barcode only implies
+        // ownership by sitting on a row, so it fills gaps rather than
+        // overriding — insert's IGNORE keeps the explicit one. Seeding both
+        // is what lets a scan resolve from this table alone, and leaves a
+        // freshly loaded file agreeing with a database that got here by
+        // migration instead.
         barcodeDao.insertAll(result.barcodes)
+        barcodeDao.insertAll(
+            result.products
+                .filter { it.barcode.isNotBlank() }
+                .distinctBy { it.barcode }
+                .map { BarcodeEntity(barcode = it.barcode, sku = it.sku) }
+        )
 
         val name = originalFileName ?: uri.lastPathSegment ?: DEFAULT_ORIGINAL_FILE_NAME
         prefs.resetForNewFile(name, uri.toString())
@@ -99,8 +112,47 @@ class ProductRepository(
     suspend fun findByBarcode(barcode: String): ProductLookup? {
         val trimmed = barcode.trim()
         if (trimmed.isEmpty()) return null
-        val sku = dao.findByBarcode(trimmed)?.sku ?: barcodeDao.findSkuByBarcode(trimmed) ?: return null
+        val sku = barcodeDao.findSkuByBarcode(trimmed) ?: return null
         return lookupFor(sku)
+    }
+
+    /**
+     * What a scan of [barcode] says about packaging, or null for a code this
+     * count has never seen. The confirm and inventory screens ask for this so
+     * a shelf's count can default to how the code is actually stickered
+     * instead of making the worker restate it at every scan.
+     */
+    suspend fun barcodeInfo(barcode: String): BarcodeEntity? {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty()) return null
+        return barcodeDao.findByBarcode(trimmed)
+    }
+
+    /**
+     * Records a ברקוד discovered mid-count — one that was scanned at a shelf
+     * without ever appearing in the source file. Without this the code would
+     * live only on the product row it created and resolve nowhere on the next
+     * scan, and it would never reach the multiple-barcodes working file,
+     * losing exactly the discovery a count is most valuable for. Registering
+     * it under a [role] the worker chose beats guessing, but an unregistered
+     * code still defaults to a plain single unit rather than blocking a scan.
+     */
+    suspend fun registerBarcode(
+        barcode: String,
+        sku: String,
+        role: String = BarcodeEntity.ROLE_UNIT,
+        packageContent: Int = 0
+    ) {
+        val trimmed = barcode.trim()
+        if (trimmed.isEmpty() || sku.isBlank()) return
+        barcodeDao.insert(
+            BarcodeEntity(
+                barcode = trimmed,
+                sku = sku,
+                role = role.takeIf { it in BarcodeEntity.ROLES } ?: BarcodeEntity.ROLE_UNIT,
+                packageContent = if (role == BarcodeEntity.ROLE_UNIT) 0 else packageContent.coerceAtLeast(0)
+            )
+        )
     }
 
     suspend fun findBySku(sku: String): ProductLookup? = lookupFor(sku)
@@ -157,6 +209,12 @@ class ProductRepository(
         if (rowsBeforeSync.isEmpty()) return
         val trimmedLocation = newLocation.trim()
         val trimmedBarcode = newBarcode.trim()
+
+        // Resolution now runs off the barcodes table alone, so a code first
+        // seen at a shelf has to land there or the very next scan of it finds
+        // nothing. IGNORE inside the dao means a code already owned by
+        // another מקט is left where it is rather than stolen.
+        registerBarcode(trimmedBarcode, sku)
 
         // Kept in sync with the DB writes below it, not just the DB itself —
         // every subsequent .copy() in this function starts from a row here,
@@ -263,6 +321,9 @@ class ProductRepository(
 
         val newDescription = newRows.first().description
         removeFromLocation(wrongRow)
+        // The code itself has to change hands too, or it would keep
+        // resolving to the מקט this call exists to move it away from.
+        barcodeDao.deleteByBarcode(trimmed)
         updateProduct(newSku, newDescription, trimmed, wrongRow.location)
     }
 

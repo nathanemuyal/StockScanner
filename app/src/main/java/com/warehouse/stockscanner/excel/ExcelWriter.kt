@@ -37,6 +37,8 @@ object ExcelWriter {
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
+    private const val COL_BARCODE_ROLE = "תפקיד"
+    private const val COL_BARCODE_CONTENT = "תכולה"
 
     // COL_LOOSE_UNITS sits between the package breakdown it belongs to and
     // the COL_QUANTITY total it feeds into: in "מעורב" mode the shelf holds
@@ -46,12 +48,14 @@ object ExcelWriter {
         COL_QUANTITY_TYPE, COL_PACKAGE_CONTENT, COL_PACKAGE_COUNT, COL_LOOSE_UNITS, COL_QUANTITY
     )
 
-    // Order matches the task spec's example: מק"ט, תיאור, ברקוד.
-    private val MULTIPLE_BARCODES_HEADERS = listOf(COL_ALIAS_SKU, COL_DESCRIPTION, COL_ALIAS_BARCODE)
+    // Order matches the task spec's example: מק"ט, תיאור, ברקוד — then what
+    // a scan of that code means, which is the point of keeping the sheet.
+    private val MULTIPLE_BARCODES_HEADERS =
+        listOf(COL_ALIAS_SKU, COL_DESCRIPTION, COL_ALIAS_BARCODE, COL_BARCODE_ROLE, COL_BARCODE_CONTENT)
 
     /**
      * Core writing logic, decoupled from Context/Uri so it can also be driven
-     * directly against a plain OutputStream (e.g. in tests). [aliases] are
+     * directly against a plain OutputStream (e.g. in tests). [barcodes] are
      * extra barcodes attached to a sku that already has its own (primary)
      * ברקוד — written as a second worksheet ("ברקודים כפולים") rather than
      * extra columns on the product rows, since an alias isn't tied to any
@@ -60,7 +64,7 @@ object ExcelWriter {
     fun writeProductsToStream(
         output: OutputStream,
         products: List<ProductEntity>,
-        aliases: List<BarcodeEntity> = emptyList()
+        barcodes: List<BarcodeEntity> = emptyList()
     ) {
         val ordered = products.sortedBy { it.rowOrder }
 
@@ -72,7 +76,7 @@ object ExcelWriter {
                 writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml(twoSheets = true))
                 writeEntry(zip, "xl/styles.xml", stylesXml())
                 writeEntry(zip, "xl/worksheets/sheet1.xml", genericSheetXml(PRODUCT_HEADERS, productRows(ordered)))
-                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(MULTIPLE_BARCODES_HEADERS, barcodeRows(aliases, ordered)))
+                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(MULTIPLE_BARCODES_HEADERS, barcodeRows(barcodes, ordered)))
             }
         }
     }
@@ -96,10 +100,10 @@ object ExcelWriter {
      */
     fun writeMultipleBarcodesToStream(
         output: OutputStream,
-        aliases: List<BarcodeEntity>,
+        barcodes: List<BarcodeEntity>,
         products: List<ProductEntity>
     ) {
-        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, barcodeRows(aliases, products))
+        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, barcodeRows(barcodes, products))
     }
 
     private fun productRows(products: List<ProductEntity>): List<List<String>> = products.map { p ->
@@ -110,9 +114,17 @@ object ExcelWriter {
         )
     }
 
-    private fun barcodeRows(aliases: List<BarcodeEntity>, products: List<ProductEntity>): List<List<String>> {
+    private fun barcodeRows(barcodes: List<BarcodeEntity>, products: List<ProductEntity>): List<List<String>> {
         val descriptionBySku = products.groupBy { it.sku }.mapValues { (_, rows) -> rows.first().description }
-        return aliases.map { alias -> listOf(alias.sku, descriptionBySku[alias.sku].orEmpty(), alias.barcode) }
+        return barcodes.map { barcode ->
+            listOf(
+                barcode.sku,
+                descriptionBySku[barcode.sku].orEmpty(),
+                barcode.barcode,
+                barcode.role,
+                barcode.packageContent.toString()
+            )
+        }
     }
 
     private fun writeEntry(zip: ZipOutputStream, name: String, content: String) {
