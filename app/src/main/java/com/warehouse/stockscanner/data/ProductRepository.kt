@@ -133,8 +133,15 @@ class ProductRepository(
      * different barcode scanned at a location [sku] already has, even a
      * second distinct barcode scanned again at the very same spot — opens a
      * brand-new row (cloned from an existing one), so nothing already
-     * recorded is ever lost or silently merged away. Never creates a row for
-     * an unknown sku.
+     * recorded is ever lost or silently merged away. Whenever this places a
+     * row somewhere for the first time — filling in a blank one or cloning a
+     * new one — that row carries the product's identity only: its quantity
+     * starts empty rather than inheriting a count that belongs to some other
+     * shelf, or one that merely rode in on the source file. Only
+     * [updateQuantity], driven by the inventory screen, ever puts a count on
+     * a row. Re-confirming a row that is already at this exact (location,
+     * barcode) leaves its count alone — that one really was counted here.
+     * Never creates a row for an unknown sku.
      *
      * The row this ends up touching is also marked [ProductEntity.scanned]
      * — this is the one and only place that happens, since this is the one
@@ -180,14 +187,33 @@ class ProductRepository(
             it.location.isBlank() && (it.barcode.isBlank() || it.barcode == trimmedBarcode)
         }
         if (blankRow != null) {
+            // Placed for the first time, so its count starts here too. A
+            // quantity that rode in on the source file was never counted at
+            // this shelf — there wasn't one — and keeping it would put units
+            // nobody counted into the locations/quantities file the moment
+            // this row becomes scanned, exactly like cloning one would below.
             dao.update(
                 blankRow.copy(
-                    description = newDescription, barcode = trimmedBarcode, location = trimmedLocation, scanned = true
+                    description = newDescription,
+                    barcode = trimmedBarcode,
+                    location = trimmedLocation,
+                    quantityType = ProductEntity.TYPE_UNITS,
+                    packageContent = 0,
+                    packageCount = 0,
+                    looseUnits = 0,
+                    quantity = 0,
+                    scanned = true
                 )
             )
             return
         }
 
+        // Cloned for the sku/description it carries — never for its
+        // quantity. That count was made at the template's own location, and
+        // copying it would put units nobody counted here into the
+        // locations/quantities file (this row is written to it immediately,
+        // being scanned = true) and prefill the inventory screen as if they
+        // had already been confirmed.
         val template = existingRows.first()
         val nextOrder = (dao.maxRowOrder() ?: -1) + 1
         dao.insert(
@@ -196,6 +222,11 @@ class ProductRepository(
                 description = newDescription,
                 barcode = trimmedBarcode,
                 location = trimmedLocation,
+                quantityType = ProductEntity.TYPE_UNITS,
+                packageContent = 0,
+                packageCount = 0,
+                looseUnits = 0,
+                quantity = 0,
                 scanned = true,
                 rowOrder = nextOrder
             )
@@ -240,8 +271,12 @@ class ProductRepository(
     /**
      * Records the stock quantity for [sku] at [location] with [barcode]
      * (that row only — quantity is per row, like everything else on it).
-     * Never creates a row: the (location, barcode) combination must already
-     * have been confirmed via [updateProduct] first.
+     * [quantity] is always the row's final count in single units;
+     * [packageContent]/[packageCount]/[looseUnits] are the breakdown it was
+     * derived from (see [ProductEntity] for what each mode uses), kept so
+     * the inventory screen can prefill exactly what was typed. Never creates
+     * a row: the (location, barcode) combination must already have been
+     * confirmed via [updateProduct] first.
      */
     suspend fun updateQuantity(
         sku: String,
@@ -250,6 +285,7 @@ class ProductRepository(
         quantityType: String,
         packageContent: Int,
         packageCount: Int,
+        looseUnits: Int,
         quantity: Int
     ) {
         val row = dao.findBySkuLocationAndBarcode(sku, location.trim(), barcode.trim()) ?: return
@@ -258,6 +294,7 @@ class ProductRepository(
                 quantityType = quantityType,
                 packageContent = packageContent,
                 packageCount = packageCount,
+                looseUnits = looseUnits,
                 quantity = quantity
             )
         )
@@ -288,6 +325,7 @@ class ProductRepository(
                     quantityType = ProductEntity.TYPE_UNITS,
                     packageContent = 0,
                     packageCount = 0,
+                    looseUnits = 0,
                     quantity = 0,
                     scanned = false
                 )

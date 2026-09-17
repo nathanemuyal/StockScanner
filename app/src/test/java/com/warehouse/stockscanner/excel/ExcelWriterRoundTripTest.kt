@@ -88,8 +88,8 @@ class ExcelWriterRoundTripTest {
     @Test
     fun `quantity fields round-trip exactly, both for units and package mode`() {
         val products = listOf(
-            ProductEntity("UNITS-1", "מוצר ביחידות", "111", "A-01-05", 0, ProductEntity.TYPE_UNITS, 0, 0, 15),
-            ProductEntity("PKG-1", "מוצר באריזות", "222", "A-01-06", 1, ProductEntity.TYPE_PACKAGE, 12, 5, 60)
+            ProductEntity("UNITS-1", "מוצר ביחידות", "111", "A-01-05", 0, ProductEntity.TYPE_UNITS, 0, 0, quantity = 15),
+            ProductEntity("PKG-1", "מוצר באריזות", "222", "A-01-06", 1, ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60)
         )
         val bytes = ByteArrayOutputStream().also {
             ExcelWriter.writeProductsToStream(it, products)
@@ -109,6 +109,45 @@ class ExcelWriterRoundTripTest {
         assertEquals(12, pkg.packageContent)
         assertEquals(5, pkg.packageCount)
         assertEquals(60, pkg.quantity)
+    }
+
+    @Test
+    fun `mixed mode round-trips the packages, the loose units and their combined total`() {
+        val products = listOf(
+            ProductEntity("MIX-1", "מוצר מעורב", "333", "A-01-07", 0, ProductEntity.TYPE_MIXED, 12, 5, 7, 67)
+        )
+        val bytes = ByteArrayOutputStream().also {
+            ExcelWriter.writeProductsToStream(it, products)
+        }.toByteArray()
+
+        // The loose units get their own column, between the package
+        // breakdown they sit beside and the total they feed into.
+        assertTrue(sheetXmlOf(bytes).contains("<t xml:space=\"preserve\">יחידות בודדות</t>"))
+
+        val mixed = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }.products.single()
+        assertEquals(ProductEntity.TYPE_MIXED, mixed.quantityType)
+        assertEquals(12, mixed.packageContent)
+        assertEquals(5, mixed.packageCount)
+        assertEquals(7, mixed.looseUnits)
+        assertEquals(67, mixed.quantity)
+    }
+
+    @Test
+    fun `a loose-units value on a row that isn't mixed is dropped rather than read back`() {
+        // Only מעורב rows have loose units; a stray value under any other
+        // mode (hand-edited file, older export) must not silently attach
+        // itself to a row whose total never counted it.
+        val products = listOf(
+            ProductEntity("PKG-2", "מוצר באריזות", "444", "A-01-08", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 7, 60)
+        )
+        val bytes = ByteArrayOutputStream().also {
+            ExcelWriter.writeProductsToStream(it, products)
+        }.toByteArray()
+
+        val row = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }.products.single()
+        assertEquals(ProductEntity.TYPE_PACKAGE, row.quantityType)
+        assertEquals(0, row.looseUnits)
+        assertEquals(60, row.quantity)
     }
 
     @Test

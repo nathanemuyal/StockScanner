@@ -24,12 +24,20 @@ import androidx.room.PrimaryKey
  * the same (sku, location, barcode) is treated as re-confirming the same row.
  *
  * Stock quantity is tracked per row (i.e. per location+barcode combination),
- * set from the inventory screen shown right after a product is confirmed. It
- * is either entered directly as a unit count ([quantityType] == [TYPE_UNITS],
- * only [quantity] is meaningful) or derived from a package breakdown
- * ([quantityType] == [TYPE_PACKAGE]: [packageContent] × [packageCount],
- * with the result kept in [quantity] so both modes always expose the same
- * final unit count).
+ * set from the inventory screen shown right after a product is confirmed.
+ * [quantity] is always the row's final count in single units, whichever of
+ * the three [quantityType] modes it was entered in:
+ *  - [TYPE_UNITS]: typed straight in as a unit count; only [quantity] is
+ *    meaningful.
+ *  - [TYPE_PACKAGE]: whole packages only — [packageContent] × [packageCount].
+ *  - [TYPE_MIXED]: the shelf holds both at once (some sealed packages plus
+ *    some loose singles, typically sharing one ברקוד) —
+ *    [packageContent] × [packageCount] + [looseUnits]. This is the mode that
+ *    keeps a second scan of the same (sku, location, barcode) from having to
+ *    overwrite the first: both halves live on the one row instead of
+ *    competing for it.
+ * [looseUnits] is only meaningful in [TYPE_MIXED] and stays 0 in the other
+ * two, so every mode always exposes the same final unit count in [quantity].
  *
  * [scanned] is what turns this table into the app's full working set while
  * keeping the *output* locations/quantities Excel file a log of only what
@@ -54,6 +62,7 @@ data class ProductEntity(
     val quantityType: String = TYPE_UNITS,
     val packageContent: Int = 0,
     val packageCount: Int = 0,
+    val looseUnits: Int = 0,
     val quantity: Int = 0,
     val scanned: Boolean = false,
     @PrimaryKey(autoGenerate = true) val id: Long = 0
@@ -61,5 +70,19 @@ data class ProductEntity(
     companion object {
         const val TYPE_UNITS = "יחידות"
         const val TYPE_PACKAGE = "אריזות"
+        const val TYPE_MIXED = "מעורב"
+
+        /**
+         * The unit total a row of this shape adds up to — the single place
+         * the three modes' arithmetic lives, so the inventory screen's live
+         * preview, what gets stored, and anything recomputing a row later
+         * can never drift apart.
+         */
+        fun totalUnits(quantityType: String, packageContent: Int, packageCount: Int, looseUnits: Int, units: Int): Int =
+            when (quantityType) {
+                TYPE_PACKAGE -> packageContent * packageCount
+                TYPE_MIXED -> packageContent * packageCount + looseUnits
+                else -> units
+            }
     }
 }

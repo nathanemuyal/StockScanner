@@ -27,7 +27,7 @@ class PhysicalExcelFileTest {
         val realFile = File.createTempFile("locations_quantities_physical_test", ".xlsx")
         try {
             val products = listOf(
-                ProductEntity("0001234", "פילטר שמן טויוטה", "7290012345678", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, 60),
+                ProductEntity("0001234", "פילטר שמן טויוטה", "7290012345678", "A-01-05", 0, ProductEntity.TYPE_PACKAGE, 12, 5, quantity = 60),
                 ProductEntity("ABC-123", "מצבר 12V", "111", "B-02-01", 1)
             )
 

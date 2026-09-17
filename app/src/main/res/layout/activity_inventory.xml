@@ -52,6 +52,17 @@
                 android:text="אריזות"
                 android:textSize="18sp" />
 
+            <!-- Both at once on the same shelf: whole packages plus loose
+                 singles, counted on one row instead of one overwriting the
+                 other on a second scan of the same ברקוד. -->
+            <RadioButton
+                android:id="@+id/rbMixed"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="מעורב"
+                android:textSize="18sp" />
+
         </RadioGroup>
 
         <LinearLayout
@@ -114,10 +125,43 @@
                 android:textSize="20sp"
                 android:layout_marginBottom="16dp" />
 
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/groupLoose"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="כמות יחידות (מחושב):"
+                android:text="יחידות בודדות (מחוץ לאריזות):"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <EditText
+                android:id="@+id/etLooseUnits"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:textSize="20sp"
+                android:layout_marginBottom="16dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/groupTotal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="סך הכל יחידות (מחושב):"
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
