@@ -628,8 +628,33 @@ class ProductRepositoryTest {
         val result = repository.loadFromExcel(sourceUri)
 
         assertEquals(1, result.duplicateBarcodeRows)
+        // Named, not just counted: the warning exists to send someone to a
+        // specific row of a file with thousands of them.
+        assertEquals(listOf("222"), result.conflictingBarcodes)
         // The sheet states ownership outright, so it is the claim that stands.
         assertEquals("ABC-123", repository.findByBarcode("222")!!.sku)
+    }
+
+    /**
+     * One code, contested twice over: two product rows claim it *and* the
+     * barcodes sheet hands it to a third מקט. It is still one code to go and
+     * look at, so counting each claim separately would tell a worker their
+     * file is twice as broken as it is.
+     */
+    @Test
+    fun `a code contested on both sheets is reported once, not once per claim`() = runBlocking {
+        val sourceUri = writeSourceFile(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "222", "A-01-05", 0),
+                ProductEntity("XYZ-9", "אחר", "222", "B-02-01", 1)
+            ),
+            listOf(BarcodeEntity(barcode = "222", sku = "QRS-5"))
+        )
+
+        val result = repository.loadFromExcel(sourceUri)
+
+        assertEquals(listOf("222"), result.conflictingBarcodes)
+        assertEquals(1, result.duplicateBarcodeRows)
     }
 
     /** A code the sheet repeats for the same מקט is agreement, not a conflict. */
