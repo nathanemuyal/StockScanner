@@ -115,13 +115,11 @@ object ExcelWriter {
      * were created in, and no migration is needed to reshuffle it.
      */
     private fun groupedBySku(products: List<ProductEntity>): List<ProductEntity> {
-        val firstAppearance = HashMap<String, Int>()
-        for (product in products.sortedBy { it.rowOrder }) {
-            firstAppearance.putIfAbsent(product.sku, product.rowOrder)
-        }
-        return products.sortedWith(
-            compareBy({ firstAppearance[it.sku] ?: it.rowOrder }, { it.rowOrder })
-        )
+        // Every sku being sorted is a sku that was just measured, so this
+        // lookup always hits — getValue rather than a fallback, which would
+        // only hide a sku going missing between the two passes.
+        val firstAppearance = products.groupBy { it.sku }.mapValues { (_, rows) -> rows.minOf { it.rowOrder } }
+        return products.sortedWith(compareBy({ firstAppearance.getValue(it.sku) }, { it.rowOrder }))
     }
 
     /**
