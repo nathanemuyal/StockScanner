@@ -14,7 +14,10 @@ class ExcelFormatException(message: String) : Exception(message)
 /**
  * Result of reading the source file. [duplicateRows] and [duplicateBarcodeRows]
  * let the caller warn the user about data-quality issues instead of silently
- * dropping or mismatching rows. [barcodes] are extra barcodes attached
+ * dropping or mismatching rows. [duplicateBarcodeRows] covers both a code
+ * two מקטים claim on the product sheet and one claimed by a different מקט on
+ * each of the two sheets — either way only one claim can survive, and the
+ * loser's units would be counted onto the wrong product. [barcodes] are extra barcodes attached
  * to a sku that already has its own primary one — read from the "ברקודים
  * כפולים" worksheet this app's own writer produces; empty for a source file
  * that never had one (e.g. a fresh export from another system).
@@ -96,7 +99,24 @@ object ExcelReader {
         // second sheet in a source file from elsewhere is otherwise ignored.
         val aliases = sheets.getOrNull(1)?.let { parseBarcodeSheet(it, sharedStrings) } ?: emptyList()
 
-        return productResult.copy(barcodes = aliases)
+        // A code can be claimed by one מקט on a product row and by another on
+        // the barcodes sheet. Only one claim can survive — the sheet's, since
+        // it states ownership outright while a product row merely implies it
+        // — and the loser's units would be counted onto the wrong product
+        // with nothing on screen to say so. Counted here rather than in
+        // parseSheet, which never sees the second worksheet.
+        val skuByProductBarcode = HashMap<String, String>()
+        for (product in productResult.products) {
+            if (product.barcode.isNotBlank()) skuByProductBarcode.putIfAbsent(product.barcode, product.sku)
+        }
+        val crossSheetConflicts = aliases.count { alias ->
+            skuByProductBarcode[alias.barcode]?.let { it != alias.sku } == true
+        }
+
+        return productResult.copy(
+            barcodes = aliases,
+            duplicateBarcodeRows = productResult.duplicateBarcodeRows + crossSheetConflicts
+        )
     }
 
     /**

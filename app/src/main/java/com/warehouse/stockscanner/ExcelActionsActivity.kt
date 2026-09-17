@@ -102,7 +102,10 @@ class ExcelActionsActivity : AppCompatActivity() {
                         warnings.add("${result.duplicateRows} שורות כפולות (אותו מקט ואותו מיקום — נלקחה השורה האחרונה)")
                     }
                     if (result.duplicateBarcodeRows > 0) {
-                        warnings.add("${result.duplicateBarcodeRows} שורות עם ברקוד כפול (בסריקה ייבחר מוצר אחד מביניהם)")
+                        warnings.add(
+                            "${result.duplicateBarcodeRows} ברקודים ששני מקטים תובעים " +
+                                "(הברקוד ישויך למקט אחד בלבד — כדאי לבדוק לפני הספירה)"
+                        )
                     }
                     showErrorDialog(
                         "נטענו ${result.products.size} מוצרים — לתשומת לבכם",
