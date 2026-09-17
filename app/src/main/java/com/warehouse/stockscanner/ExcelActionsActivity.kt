@@ -18,6 +18,13 @@ import com.warehouse.stockscanner.util.showErrorDialog
 import kotlinx.coroutines.launch
 
 /**
+ * How many contested ברקודים the load warning names outright. Enough to go
+ * and find them in the file, few enough that a badly broken file still leaves
+ * a dialog a person can read; the rest are reported as a remainder.
+ */
+private const val MAX_LISTED_BARCODES = 5
+
+/**
  * A separate, deliberate screen for everything to do with the Excel files
  * themselves — picking a new source file and saving the two working copies
  * derived from it — kept off the main scanning screen so neither can happen
@@ -101,10 +108,18 @@ class ExcelActionsActivity : AppCompatActivity() {
                     if (result.duplicateRows > 0) {
                         warnings.add("${result.duplicateRows} שורות כפולות (אותו מקט ואותו מיקום — נלקחה השורה האחרונה)")
                     }
-                    if (result.duplicateBarcodeRows > 0) {
+                    if (result.conflictingBarcodes.isNotEmpty()) {
+                        // Naming the codes is the point of the warning: "go and
+                        // check the file" is not something a worker can act on
+                        // against thousands of rows unless it says which rows.
+                        // Only the first few, so a badly broken file still
+                        // leaves a dialog that can be read.
+                        val shown = result.conflictingBarcodes.take(MAX_LISTED_BARCODES)
+                        val rest = result.conflictingBarcodes.size - shown.size
+                        val codes = shown.joinToString(", ") + if (rest > 0) " ועוד $rest" else ""
                         warnings.add(
-                            "${result.duplicateBarcodeRows} ברקודים ששני מקטים תובעים " +
-                                "(הברקוד ישויך למקט אחד בלבד — כדאי לבדוק לפני הספירה)"
+                            "${result.conflictingBarcodes.size} ברקודים ששני מקטים תובעים: $codes " +
+                                "(כל ברקוד ישויך למקט אחד בלבד — כדאי לבדוק בקובץ לפני שמתחילים לספור)"
                         )
                     }
                     showErrorDialog(
