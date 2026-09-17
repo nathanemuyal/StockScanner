@@ -108,8 +108,15 @@ object ExcelWriter {
      * arithmetic that turns packages into units happened when the count was
      * recorded, not here.
      *
-     * Skus keep the order they appear in the detail sheet, and locations the
-     * order they were counted in, so the two sheets read side by side.
+     * Skus keep the order they first appear in, and locations the order they
+     * were counted in.
+     *
+     * That does not yet make the two sheets read side by side, because this
+     * one groups a מקט's rows while the detail sheet still scatters them: a
+     * second ברקוד opened later for a מקט counted earlier takes
+     * maxRowOrder + 1 and lands at the end of the table. Grouping the detail
+     * sheet the same way is a separate change; until it lands, the summary
+     * is the only place a מקט's shelves sit together.
      */
     private fun summaryRows(products: List<ProductEntity>): List<List<String>> {
         val rows = mutableListOf<List<String>>()
