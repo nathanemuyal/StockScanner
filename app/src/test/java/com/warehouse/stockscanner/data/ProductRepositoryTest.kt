@@ -107,6 +107,53 @@ class ProductRepositoryTest {
         assertEquals(2, repository.count()) // a new row was opened, the old one kept
     }
 
+    /**
+     * A מקט can legitimately have two unplaced rows: one already carrying a
+     * ברקוד and one with none. (Two with nothing in both columns cannot —
+     * the unique index forbids it.) Requiring exactly one candidate made a
+     * scan of that very ברקוד clone a third row, stranding both originals
+     * and adding one no shelf and no scan ever accounted for.
+     */
+    @Test
+    fun `a scan fills the unplaced row already carrying its barcode instead of cloning a third`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "", 0),
+                ProductEntity("ABC-123", "מוצר", "", "", 1)
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01-05")
+
+        val rows = db.productDao().findAllBySku("ABC-123")
+        assertEquals(2, rows.size)
+        val placed = rows.single { it.location.isNotBlank() }
+        assertEquals("A-01-05", placed.location)
+        // The row that already had this code is the one that got the shelf...
+        assertEquals("111", placed.barcode)
+        // ...and the barcode-less row stays unplaced and available.
+        assertEquals(1, rows.count { it.location.isBlank() && it.barcode.isBlank() })
+    }
+
+    /** The leftover blank row is still there for the next shelf, rather than a clone being made. */
+    @Test
+    fun `a second shelf uses the remaining unplaced row`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "111", "", 0),
+                ProductEntity("ABC-123", "מוצר", "", "", 1)
+            )
+        )
+
+        repository.updateProduct("ABC-123", "מוצר", "111", "A-01-05")
+        repository.updateProduct("ABC-123", "מוצר", "222", "B-02-01")
+
+        val rows = db.productDao().findAllBySku("ABC-123")
+        assertEquals(2, rows.size)
+        assertEquals(setOf("A-01-05", "B-02-01"), rows.map { it.location }.toSet())
+        assertEquals(setOf("111", "222"), rows.map { it.barcode }.toSet())
+    }
+
     @Test
     fun `updateProduct on an unknown sku is a no-op, never creates a row`() = runBlocking {
         repository.updateProduct("DOES-NOT-EXIST", "x", "1", "A-01-01")
