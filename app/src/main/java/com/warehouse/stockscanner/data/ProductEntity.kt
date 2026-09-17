@@ -48,6 +48,12 @@ import androidx.room.PrimaryKey
  * only [scanned] rows to the physical locations/quantities file, so a worker
  * never sees the whole picked catalog copied into it, only what they've
  * actually counted.
+ *
+ * [countedAt] is when [ProductRepository.updateQuantity] last recorded a
+ * count for this row, as epoch millis, and 0 until it ever has. A count
+ * questioned later has to be answerable — which of two numbers is the fresh
+ * one, whether a row was touched during this count at all — and neither
+ * [scanned] nor the quantity itself can say.
  */
 @Entity(
     tableName = "products",
@@ -65,6 +71,7 @@ data class ProductEntity(
     val looseUnits: Int = 0,
     val quantity: Int = 0,
     val scanned: Boolean = false,
+    val countedAt: Long = 0,
     @PrimaryKey(autoGenerate = true) val id: Long = 0
 ) {
     companion object {

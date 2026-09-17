@@ -3,7 +3,7 @@ package com.warehouse.stockscanner.excel
 import android.content.Context
 import android.net.Uri
 import android.util.Xml
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayOutputStream
@@ -14,7 +14,7 @@ class ExcelFormatException(message: String) : Exception(message)
 /**
  * Result of reading the source file. [duplicateRows] and [duplicateBarcodeRows]
  * let the caller warn the user about data-quality issues instead of silently
- * dropping or mismatching rows. [barcodeAliases] are extra barcodes attached
+ * dropping or mismatching rows. [barcodes] are extra barcodes attached
  * to a sku that already has its own primary one — read from the "ברקודים
  * כפולים" worksheet this app's own writer produces; empty for a source file
  * that never had one (e.g. a fresh export from another system).
@@ -23,7 +23,7 @@ data class ExcelLoadResult(
     val products: List<ProductEntity>,
     val duplicateRows: Int,
     val duplicateBarcodeRows: Int,
-    val barcodeAliases: List<BarcodeAliasEntity> = emptyList()
+    val barcodes: List<BarcodeEntity> = emptyList()
 )
 
 /** One row of the standalone "multiple barcodes" working file: a מקט, its description, and one extra ברקוד aliased to it. */
@@ -80,9 +80,9 @@ object ExcelReader {
         // A second worksheet, if present, is only ever treated as the
         // ברקודים כפולים sheet when its headers actually match — a random
         // second sheet in a source file from elsewhere is otherwise ignored.
-        val aliases = sheets.getOrNull(1)?.let { parseAliasSheet(it, sharedStrings) } ?: emptyList()
+        val aliases = sheets.getOrNull(1)?.let { parseBarcodeSheet(it, sharedStrings) } ?: emptyList()
 
-        return productResult.copy(barcodeAliases = aliases)
+        return productResult.copy(barcodes = aliases)
     }
 
     /**
@@ -187,7 +187,7 @@ object ExcelReader {
     /** A worksheet's header row (by name -> column index) plus every data row that follows it. */
     private data class RawSheet(val headers: Map<String, Int>?, val dataRows: List<Map<Int, String>>)
 
-    /** Walks a worksheet's raw XML into rows, resolving shared strings — shared by [parseSheet] and [parseAliasSheet]. */
+    /** Walks a worksheet's raw XML into rows, resolving shared strings — shared by [parseSheet] and [parseBarcodeSheet]. */
     private fun parseRawSheet(bytes: ByteArray, sharedStrings: List<String>): RawSheet {
         val parser = Xml.newPullParser()
         parser.setInput(bytes.inputStream(), "UTF-8")
@@ -390,7 +390,7 @@ object ExcelReader {
      * second sheet, or none of these headers) this quietly returns nothing,
      * exactly like a legacy source file with no such sheet at all.
      */
-    private fun parseAliasSheet(bytes: ByteArray, sharedStrings: List<String>): List<BarcodeAliasEntity> {
+    private fun parseBarcodeSheet(bytes: ByteArray, sharedStrings: List<String>): List<BarcodeEntity> {
         val raw = parseRawSheet(bytes, sharedStrings)
         val headers = raw.headers ?: return emptyList()
         val barcodeCol = headers[COL_ALIAS_BARCODE] ?: return emptyList()
@@ -405,7 +405,7 @@ object ExcelReader {
             if (barcode.isEmpty() || sku.isEmpty()) continue
             byBarcode[barcode] = sku
         }
-        return byBarcode.map { (barcode, sku) -> BarcodeAliasEntity(barcode = barcode, sku = sku) }
+        return byBarcode.map { (barcode, sku) -> BarcodeEntity(barcode = barcode, sku = sku) }
     }
 
     private fun buildHeaderMap(row: Map<Int, String>): Map<String, Int> {

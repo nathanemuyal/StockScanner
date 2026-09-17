@@ -1,6 +1,6 @@
 package com.warehouse.stockscanner.excel
 
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -175,8 +175,8 @@ class ExcelWriterRoundTripTest {
     fun `barcode aliases round-trip through their own sheet, separate from the product rows`() {
         val products = listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
         val aliases = listOf(
-            BarcodeAliasEntity(barcode = "222", sku = "ABC-123"),
-            BarcodeAliasEntity(barcode = "333", sku = "ABC-123")
+            BarcodeEntity(barcode = "222", sku = "ABC-123"),
+            BarcodeEntity(barcode = "333", sku = "ABC-123")
         )
         val bytes = ByteArrayOutputStream().also {
             ExcelWriter.writeProductsToStream(it, products, aliases)
@@ -184,8 +184,8 @@ class ExcelWriterRoundTripTest {
 
         val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
         assertEquals(1, result.products.size) // aliases never turn into extra product rows
-        assertEquals(setOf("222", "333"), result.barcodeAliases.map { it.barcode }.toSet())
-        assertTrue(result.barcodeAliases.all { it.sku == "ABC-123" })
+        assertEquals(setOf("222", "333"), result.barcodes.map { it.barcode }.toSet())
+        assertTrue(result.barcodes.all { it.sku == "ABC-123" })
     }
 
     @Test
@@ -196,6 +196,6 @@ class ExcelWriterRoundTripTest {
         }.toByteArray()
 
         val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
-        assertTrue(result.barcodeAliases.isEmpty())
+        assertTrue(result.barcodes.isEmpty())
     }
 }

@@ -13,15 +13,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * immediately, so nothing is lost if the app is killed.
  *
  * That same promise is why a schema change ships with a real migration
- * where one is possible (see [MIGRATION_6_7]): updating the app in the
+ * where one is possible (see [MIGRATION_7_8]): updating the app in the
  * middle of a count must not be the one thing that throws away what's
  * already been scanned. [RoomDatabase.Builder.fallbackToDestructiveMigration]
  * stays on only as the last resort for an upgrade path no migration covers.
  */
-@Database(entities = [ProductEntity::class, BarcodeAliasEntity::class], version = 7, exportSchema = false)
+@Database(entities = [ProductEntity::class, BarcodeEntity::class], version = 8, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun productDao(): ProductDao
-    abstract fun barcodeAliasDao(): BarcodeAliasDao
+    abstract fun barcodeDao(): BarcodeDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -39,6 +39,49 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7 -> v8: barcode_aliases becomes [BarcodeEntity], the single
+         * table holding every ברקוד with the packaging [BarcodeEntity.role]
+         * one scan of it means, and [ProductEntity.countedAt] records when a
+         * row was counted.
+         *
+         * Both halves of the old mapping are carried over, aliases first:
+         * those rows are an explicit statement that a code belongs to a מקט,
+         * while a products.barcode is only implied by a row that happens to
+         * carry it. INSERT OR IGNORE then keeps the explicit one wherever
+         * both name the same code, matching the IGNORE the alias table was
+         * always written with.
+         *
+         * Everything lands as [BarcodeEntity.ROLE_UNIT] with no package
+         * content: that is exactly what the app assumed before this table
+         * existed — one scan, one unit — so an upgrade mid-count changes
+         * nothing about how the codes already in use behave. Real roles
+         * arrive from the source file or from the worker, never guessed here.
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE products ADD COLUMN countedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS barcodes (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "barcode TEXT NOT NULL, " +
+                        "sku TEXT NOT NULL, " +
+                        "role TEXT NOT NULL, " +
+                        "packageContent INTEGER NOT NULL)"
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_barcodes_barcode ON barcodes (barcode)")
+                db.execSQL(
+                    "INSERT OR IGNORE INTO barcodes (barcode, sku, role, packageContent) " +
+                        "SELECT barcode, sku, '${BarcodeEntity.ROLE_UNIT}', 0 FROM barcode_aliases WHERE barcode <> ''"
+                )
+                db.execSQL(
+                    "INSERT OR IGNORE INTO barcodes (barcode, sku, role, packageContent) " +
+                        "SELECT DISTINCT barcode, sku, '${BarcodeEntity.ROLE_UNIT}', 0 FROM products WHERE barcode <> ''"
+                )
+                db.execSQL("DROP TABLE barcode_aliases")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -46,7 +89,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "stock_scanner.db"
                 )
-                    .addMigrations(MIGRATION_6_7)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

@@ -30,8 +30,10 @@ data class ProductLookup(
 class ProductRepository(
     private val context: Context,
     private val dao: ProductDao,
-    private val aliasDao: BarcodeAliasDao,
-    private val prefs: SessionPrefs
+    private val barcodeDao: BarcodeDao,
+    private val prefs: SessionPrefs,
+    /** Overridable so a test can pin the [ProductEntity.countedAt] stamp instead of racing the wall clock. */
+    private val now: () -> Long = System::currentTimeMillis
 ) {
 
     /**
@@ -61,8 +63,8 @@ class ProductRepository(
         val result = ExcelReader.readProducts(context, uri)
         dao.clearAll()
         dao.insertAll(result.products)
-        aliasDao.clearAll()
-        aliasDao.insertAll(result.barcodeAliases)
+        barcodeDao.clearAll()
+        barcodeDao.insertAll(result.barcodes)
 
         val name = originalFileName ?: uri.lastPathSegment ?: DEFAULT_ORIGINAL_FILE_NAME
         prefs.resetForNewFile(name, uri.toString())
@@ -91,13 +93,13 @@ class ProductRepository(
     /**
      * Resolves [barcode] to its product, checking the product's own (primary)
      * ברקוד first and, if nothing matches there, the extra barcodes aliased
-     * to a sku via [BarcodeAliasEntity] — several different physical codes
+     * to a sku via [BarcodeEntity] — several different physical codes
      * can point at the very same product.
      */
     suspend fun findByBarcode(barcode: String): ProductLookup? {
         val trimmed = barcode.trim()
         if (trimmed.isEmpty()) return null
-        val sku = dao.findByBarcode(trimmed)?.sku ?: aliasDao.findSkuByBarcode(trimmed) ?: return null
+        val sku = dao.findByBarcode(trimmed)?.sku ?: barcodeDao.findSkuByBarcode(trimmed) ?: return null
         return lookupFor(sku)
     }
 
@@ -277,6 +279,9 @@ class ProductRepository(
      * the inventory screen can prefill exactly what was typed. Never creates
      * a row: the (location, barcode) combination must already have been
      * confirmed via [updateProduct] first.
+     *
+     * Stamps [ProductEntity.countedAt] — this is the only place a count is
+     * ever recorded, so it is the only place that can date one.
      */
     suspend fun updateQuantity(
         sku: String,
@@ -295,7 +300,8 @@ class ProductRepository(
                 packageContent = packageContent,
                 packageCount = packageCount,
                 looseUnits = looseUnits,
-                quantity = quantity
+                quantity = quantity,
+                countedAt = now()
             )
         )
     }
@@ -397,7 +403,7 @@ class ProductRepository(
     }
 
     private suspend fun writeMultipleBarcodesFile(fileName: String) {
-        val aliases = aliasDao.getAll()
+        val aliases = barcodeDao.getAll()
         val products = dao.getAllOrdered()
         val file = File(context.filesDir, fileName)
         try {

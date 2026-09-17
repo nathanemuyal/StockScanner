@@ -1,6 +1,6 @@
 package com.warehouse.stockscanner.excel
 
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import java.io.BufferedOutputStream
 import java.io.OutputStream
@@ -60,7 +60,7 @@ object ExcelWriter {
     fun writeProductsToStream(
         output: OutputStream,
         products: List<ProductEntity>,
-        aliases: List<BarcodeAliasEntity> = emptyList()
+        aliases: List<BarcodeEntity> = emptyList()
     ) {
         val ordered = products.sortedBy { it.rowOrder }
 
@@ -72,7 +72,7 @@ object ExcelWriter {
                 writeEntry(zip, "xl/_rels/workbook.xml.rels", workbookRelsXml(twoSheets = true))
                 writeEntry(zip, "xl/styles.xml", stylesXml())
                 writeEntry(zip, "xl/worksheets/sheet1.xml", genericSheetXml(PRODUCT_HEADERS, productRows(ordered)))
-                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, ordered)))
+                writeEntry(zip, "xl/worksheets/sheet2.xml", genericSheetXml(MULTIPLE_BARCODES_HEADERS, barcodeRows(aliases, ordered)))
             }
         }
     }
@@ -92,14 +92,14 @@ object ExcelWriter {
      * The "multiple barcodes per מקט" working file: every extra ברקוד
      * aliased to a sku that already has its own primary one, alongside that
      * sku's description for readability (looked up from [products], not
-     * stored redundantly on [BarcodeAliasEntity] itself).
+     * stored redundantly on [BarcodeEntity] itself).
      */
     fun writeMultipleBarcodesToStream(
         output: OutputStream,
-        aliases: List<BarcodeAliasEntity>,
+        aliases: List<BarcodeEntity>,
         products: List<ProductEntity>
     ) {
-        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, aliasRows(aliases, products))
+        writeSingleSheetPackage(output, MULTIPLE_BARCODES_HEADERS, barcodeRows(aliases, products))
     }
 
     private fun productRows(products: List<ProductEntity>): List<List<String>> = products.map { p ->
@@ -110,7 +110,7 @@ object ExcelWriter {
         )
     }
 
-    private fun aliasRows(aliases: List<BarcodeAliasEntity>, products: List<ProductEntity>): List<List<String>> {
+    private fun barcodeRows(aliases: List<BarcodeEntity>, products: List<ProductEntity>): List<List<String>> {
         val descriptionBySku = products.groupBy { it.sku }.mapValues { (_, rows) -> rows.first().description }
         return aliases.map { alias -> listOf(alias.sku, descriptionBySku[alias.sku].orEmpty(), alias.barcode) }
     }
