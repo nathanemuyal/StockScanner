@@ -15,18 +15,18 @@ import java.util.zip.ZipInputStream
 @RunWith(RobolectricTestRunner::class)
 class ExcelWriterRoundTripTest {
 
-    /** Raw text of the written sheet, to check actual column headers/cells. */
-    private fun sheetXmlOf(bytes: ByteArray): String {
+    /** Raw text of a written sheet, to check actual column headers/cells. */
+    private fun sheetXmlOf(bytes: ByteArray, entryName: String = "sheet1.xml"): String {
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
-                if (entry.name == "xl/worksheets/sheet1.xml") {
+                if (entry.name == "xl/worksheets/$entryName") {
                     return zip.readBytes().toString(Charsets.UTF_8)
                 }
                 entry = zip.nextEntry
             }
         }
-        error("sheet1.xml not found in written archive")
+        error("$entryName not found in written archive")
     }
 
     @Test
@@ -304,5 +304,35 @@ class ExcelWriterRoundTripTest {
         )
         // Within the sku, still the order they were counted in.
         assertEquals(listOf("111", "222"), readBack.filter { it.sku == "ABC-123" }.map { it.barcode })
+    }
+
+    /**
+     * Reloading the locations file must not mistake its summary for barcodes.
+     *
+     * The reader treats the *second* worksheet as the ברקודים כפולים sheet,
+     * and this file now has one — the summary. It is ignored only because
+     * parseBarcodeSheet insists on a ברקוד column the summary has no reason
+     * to carry, which is a load-bearing coincidence rather than a decision.
+     * Pinning it here so that giving the summary a barcode column one day
+     * fails as a test instead of as a warehouse full of aliases nobody made.
+     */
+    @Test
+    fun `reloading the locations file does not read its summary as barcodes`() {
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 43, true),
+            ProductEntity("ABC-123", "פילטר", "222", "B-03", 1, ProductEntity.TYPE_UNITS, 0, 0, 0, 15, true)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+        // The summary really is sheet 2 of this file, so the risk is live.
+        assertTrue(sheetXmlOf(bytes, "sheet2.xml").contains("סה״כ"))
+
+        val result = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes))
+
+        assertEquals(2, result.products.size)
+        assertTrue("the summary must not become barcode rows", result.barcodeAliases.isEmpty())
     }
 }
