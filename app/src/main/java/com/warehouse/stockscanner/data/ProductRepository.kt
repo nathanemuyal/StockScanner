@@ -344,11 +344,23 @@ class ProductRepository(
         if (wrongRow.sku == newSku) return
 
         val newDescription = newRows.first().description
+        // What the code means physically is not in question here — only
+        // which product it belongs to. The sticker is still on the same
+        // carton of twelve whoever owns it, and re-registration below would
+        // otherwise reset it to a plain single unit. That answer can be a
+        // worker's own, given once when the code was first seen, and it
+        // would not be asked for again: the code counts as known from then
+        // on, so every later scan would quietly divide the carton by its
+        // contents.
+        val packaging = barcodeDao.findByBarcode(trimmed)
         removeFromLocation(wrongRow)
         // The code itself has to change hands too, or it would keep
         // resolving to the מקט this call exists to move it away from.
         barcodeDao.deleteByBarcode(trimmed)
         updateProduct(newSku, newDescription, trimmed, wrongRow.location)
+        if (packaging != null && packaging.role != BarcodeEntity.ROLE_UNIT) {
+            setBarcodeRole(trimmed, packaging.role, packaging.packageContent)
+        }
     }
 
     /** The exact row for [sku] at [location] with [barcode] — used by the inventory screen to prefill an existing quantity. */
