@@ -12,19 +12,33 @@ import java.util.zip.ZipInputStream
 class ExcelFormatException(message: String) : Exception(message)
 
 /**
- * Result of reading the source file. [duplicateRows] and [duplicateBarcodeRows]
+ * Result of reading the source file. [duplicateRows] and [conflictingBarcodes]
  * let the caller warn the user about data-quality issues instead of silently
- * dropping or mismatching rows. [barcodes] are extra barcodes attached
- * to a sku that already has its own primary one — read from the "ברקודים
- * כפולים" worksheet this app's own writer produces; empty for a source file
- * that never had one (e.g. a fresh export from another system).
+ * dropping or mismatching rows.
+ *
+ * [conflictingBarcodes] holds the codes themselves, not just how many, because
+ * the only useful thing to say about one is which code to go and look at: a
+ * count against a file with thousands of rows cannot act on a number alone. It
+ * covers both a code two מקטים claim on the product sheet and one claimed by
+ * a different מקט on each of the two sheets — either way only one claim can
+ * survive, and the loser's units would be counted onto the wrong product. Each
+ * code appears once however many ways it is contested, so the list is a count
+ * of ambiguous codes rather than of claims against them.
+ *
+ * [barcodes] are extra barcodes attached to a sku that already has its own
+ * primary one — read from the "ברקודים כפולים" worksheet this app's own
+ * writer produces; empty for a source file that never had one (e.g. a fresh
+ * export from another system).
  */
 data class ExcelLoadResult(
     val products: List<ProductEntity>,
     val duplicateRows: Int,
-    val duplicateBarcodeRows: Int,
+    val conflictingBarcodes: List<String>,
     val barcodes: List<BarcodeEntity> = emptyList()
-)
+) {
+    /** How many distinct codes are contested — one per code, never one per claim. */
+    val duplicateBarcodeRows: Int get() = conflictingBarcodes.size
+}
 
 /**
  * One row of the standalone "multiple barcodes" working file: a מקט, its
@@ -97,7 +111,27 @@ object ExcelReader {
         // second sheet in a source file from elsewhere is otherwise ignored.
         val aliases = sheets.getOrNull(1)?.let { parseBarcodeSheet(it, sharedStrings) } ?: emptyList()
 
-        return productResult.copy(barcodes = aliases)
+        // A code can be claimed by one מקט on a product row and by another on
+        // the barcodes sheet. Only one claim can survive — the sheet's, since
+        // it states ownership outright while a product row merely implies it
+        // — and the loser's units would be counted onto the wrong product
+        // with nothing on screen to say so. Collected here rather than in
+        // parseSheet, which never sees the second worksheet.
+        val skuByProductBarcode = HashMap<String, String>()
+        for (product in productResult.products) {
+            if (product.barcode.isNotBlank()) skuByProductBarcode.putIfAbsent(product.barcode, product.sku)
+        }
+        val crossSheetConflicts = aliases
+            .filter { alias -> skuByProductBarcode[alias.barcode]?.let { it != alias.sku } == true }
+            .map { it.barcode }
+
+        // Union, not sum: a code contested on the product sheet *and* claimed
+        // again by the barcodes sheet is still one code to go and check, and
+        // reporting it twice would overstate how much of the file is in doubt.
+        return productResult.copy(
+            barcodes = aliases,
+            conflictingBarcodes = (productResult.conflictingBarcodes + crossSheetConflicts).distinct()
+        )
     }
 
     /**
@@ -411,9 +445,12 @@ object ExcelReader {
             if (p.barcode.isNotBlank()) barcodeBySku.putIfAbsent(p.sku, p.barcode)
         }
         val barcodes = barcodeBySku.values.toList()
-        val duplicateBarcodeRows = barcodes.size - barcodes.distinct().size
+        // The codes more than one sku claims — reported by code rather than
+        // by how many claims there are, since a worker can only act on the
+        // code itself.
+        val conflictingBarcodes = barcodes.groupBy { it }.filterValues { it.size > 1 }.keys.toList()
 
-        return ExcelLoadResult(products, duplicateRows, duplicateBarcodeRows)
+        return ExcelLoadResult(products, duplicateRows, conflictingBarcodes)
     }
 
     /**
