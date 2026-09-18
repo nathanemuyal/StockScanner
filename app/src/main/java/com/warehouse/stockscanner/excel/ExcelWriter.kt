@@ -70,6 +70,8 @@ object ExcelWriter {
     private fun formatCountedAt(countedAt: Long): String =
         if (countedAt > 0L) COUNTED_AT_FORMAT.format(java.util.Date(countedAt)) else ""
 
+    private val SUMMARY_HEADERS = listOf(COL_SKU, COL_DESCRIPTION, COL_LOCATION, COL_SUMMARY_TOTAL)
+
     // Order matches the task spec's example: מק"ט, תיאור, ברקוד — then what
     // a scan of that code means, which is the point of keeping the sheet.
     private val MULTIPLE_BARCODES_HEADERS =
