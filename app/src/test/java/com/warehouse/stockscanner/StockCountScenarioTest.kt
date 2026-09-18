@@ -372,4 +372,121 @@ class StockCountScenarioTest {
         assertEquals(1, runBlocking { db.productDao().findAllBySku("ABC-123") }.size)
         assertNull(runBlocking { repository.findRow("ABC-123", "A-01", "111") })
     }
+
+    // ---------- all three modes at once ----------
+
+    /**
+     * One מקט counted three times, each shelf in a different mode: cartons,
+     * loose singles, and a shelf holding both. Each mode does its own
+     * arithmetic on the way in, so the only thing that can make the total
+     * right is that all three stored a unit figure — which is exactly the
+     * agreement the summary depends on and no single-mode test can show.
+     */
+    @Test
+    fun `one sku counted in packages, units and mixed totals correctly across all three`() {
+        load(
+            listOf(ProductEntity("ABC-123", "פילטר", "B-UNIT", "", 0)),
+            listOf(
+                BarcodeEntity(barcode = "B-PACK", sku = "ABC-123", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12),
+                BarcodeEntity(barcode = "B-UNIT", sku = "ABC-123", role = BarcodeEntity.ROLE_UNIT),
+                BarcodeEntity(barcode = "B-BOTH", sku = "ABC-123", role = BarcodeEntity.ROLE_MIXED, packageContent = 6)
+            )
+        )
+
+        // A-01: 3 cartons of 12 = 36
+        scanAndCount("ABC-123", "פילטר", "B-PACK", "A-01", ProductEntity.TYPE_PACKAGE, 12, 3)
+        // B-03: 7 loose singles
+        scanAndCountUnits("ABC-123", "פילטר", "B-UNIT", "B-03", 7)
+        // C-07: 4 packs of 6 plus 5 loose = 29
+        scanAndCount("ABC-123", "פילטר", "B-BOTH", "C-07", ProductEntity.TYPE_MIXED, 6, 4, looseUnits = 5)
+
+        assertEquals("36", summaryTotalFor("ABC-123", "A-01"))
+        assertEquals("7", summaryTotalFor("ABC-123", "B-03"))
+        assertEquals("29", summaryTotalFor("ABC-123", "C-07"))
+        assertEquals("72", summaryTotalFor("ABC-123", "סה״כ"))
+
+        // Three shelves, three rows, three different modes on record.
+        val rows = savedDetailRows()
+        assertEquals(3, rows.size)
+        assertEquals(
+            setOf(ProductEntity.TYPE_PACKAGE, ProductEntity.TYPE_UNITS, ProductEntity.TYPE_MIXED),
+            rows.map { it.quantityType }.toSet()
+        )
+    }
+
+    /**
+     * Two different מקטים sharing one shelf. The summary is grouped by מקט
+     * first, so a per-shelf total that leaked across products would be
+     * invisible in the detail sheet and wrong in the only sheet anyone adds
+     * up.
+     */
+    @Test
+    fun `two skus on the same shelf are totalled separately`() {
+        load(
+            listOf(
+                ProductEntity("ABC-123", "פילטר", "111", "", 0),
+                ProductEntity("XYZ-9", "אום", "444", "", 1)
+            )
+        )
+
+        scanAndCountUnits("ABC-123", "פילטר", "111", "A-01", 10)
+        scanAndCountUnits("XYZ-9", "אום", "444", "A-01", 3)
+
+        assertEquals("10", summaryTotalFor("ABC-123", "A-01"))
+        assertEquals("3", summaryTotalFor("XYZ-9", "A-01"))
+        assertEquals("10", summaryTotalFor("ABC-123", "סה״כ"))
+        assertEquals("3", summaryTotalFor("XYZ-9", "סה״כ"))
+    }
+
+    /**
+     * A worker who first counted cartons finds loose units behind them and
+     * recounts the shelf as מעורב. The row has to become the new shape
+     * outright — a leftover packageCount from the first pass would be added
+     * to the loose units and inflate the shelf.
+     */
+    @Test
+    fun `recounting a shelf in a different mode replaces the whole breakdown`() {
+        load(
+            listOf(ProductEntity("ABC-123", "פילטר", "B-PACK", "", 0)),
+            listOf(BarcodeEntity(barcode = "B-PACK", sku = "ABC-123", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12))
+        )
+
+        scanAndCount("ABC-123", "פילטר", "B-PACK", "A-01", ProductEntity.TYPE_PACKAGE, 12, 3)
+        assertEquals("36", summaryTotalFor("ABC-123", "A-01"))
+
+        // Same shelf, same code, recounted: 2 cartons and 5 singles.
+        scanAndCount("ABC-123", "פילטר", "B-PACK", "A-01", ProductEntity.TYPE_MIXED, 12, 2, looseUnits = 5)
+
+        val row = savedDetailRows().single()
+        assertEquals(ProductEntity.TYPE_MIXED, row.quantityType)
+        assertEquals(2, row.packageCount)
+        assertEquals(5, row.looseUnits)
+        assertEquals(29, row.quantity)
+        assertEquals("29", summaryTotalFor("ABC-123", "A-01"))
+    }
+
+    /**
+     * The shelf wins, but only for its own row. A worker who finds cartons
+     * of 10 under a code described as 12 counts what is in front of them;
+     * the other shelf's count must not move, and the code itself must keep
+     * saying 12 — one odd shelf does not redefine a ברקוד for the rest of
+     * the count.
+     */
+    @Test
+    fun `overriding the package size on one shelf leaves the other shelf and the code alone`() {
+        load(
+            listOf(ProductEntity("ABC-123", "פילטר", "B-PACK", "", 0)),
+            listOf(BarcodeEntity(barcode = "B-PACK", sku = "ABC-123", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12))
+        )
+
+        scanAndCount("ABC-123", "פילטר", "B-PACK", "A-01", ProductEntity.TYPE_PACKAGE, 12, 2)
+        // Same code, another shelf, cartons of 10 this time.
+        scanAndCount("ABC-123", "פילטר", "B-PACK", "B-03", ProductEntity.TYPE_PACKAGE, 10, 3)
+
+        assertEquals("24", summaryTotalFor("ABC-123", "A-01"))
+        assertEquals("30", summaryTotalFor("ABC-123", "B-03"))
+        assertEquals("54", summaryTotalFor("ABC-123", "סה״כ"))
+        // The code keeps what the file said; the override belonged to one row.
+        assertEquals(12, runBlocking { repository.barcodeInfo("B-PACK") }!!.packageContent)
+    }
 }
