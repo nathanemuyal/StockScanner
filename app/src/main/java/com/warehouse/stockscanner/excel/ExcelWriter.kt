@@ -112,12 +112,33 @@ object ExcelWriter {
      * as it was: it is the audit trail showing how each total was reached.
      */
     fun writeLocationsQuantitiesToStream(output: OutputStream, products: List<ProductEntity>) {
-        val ordered = products.sortedBy { it.rowOrder }
+        val ordered = groupedBySku(products)
         writeTwoSheetPackage(
             output,
             PRODUCT_HEADERS, productRows(ordered),
             SUMMARY_SHEET_NAME, SUMMARY_HEADERS, summaryRows(ordered)
         )
+    }
+
+    /**
+     * Keeps a מקט's rows next to each other, in the order they were counted.
+     *
+     * A row opened later for a מקט counted earlier — a second ברקוד at the
+     * same shelf, or the same product found on another shelf — takes
+     * maxRowOrder + 1 and so lands at the very end of the table, pages away
+     * from the rows it belongs with. Reading a product's shelves then means
+     * hunting through the file for lines that should have been adjacent.
+     *
+     * Sorting at write time rather than renumbering rowOrder keeps this a
+     * question of how the file reads: rowOrder still records the order rows
+     * were created in, and no migration is needed to reshuffle it.
+     */
+    private fun groupedBySku(products: List<ProductEntity>): List<ProductEntity> {
+        // Every sku being sorted is a sku that was just measured, so this
+        // lookup always hits — getValue rather than a fallback, which would
+        // only hide a sku going missing between the two passes.
+        val firstAppearance = products.groupBy { it.sku }.mapValues { (_, rows) -> rows.minOf { it.rowOrder } }
+        return products.sortedWith(compareBy({ firstAppearance.getValue(it.sku) }, { it.rowOrder }))
     }
 
     /**

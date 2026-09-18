@@ -375,6 +375,36 @@ class ExcelWriterRoundTripTest {
     }
 
     /**
+     * A second ברקוד scanned at a shelf a מקט was already counted at opens a
+     * row with maxRowOrder + 1, which lands it at the very end of the table
+     * — pages away from the rows it belongs with. Reading one product's
+     * shelves should not mean hunting through the file.
+     */
+    @Test
+    fun `rows opened later still sit with the rest of their sku`() {
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 10, true),
+            ProductEntity("XYZ-9", "אום", "444", "A-01", 1, ProductEntity.TYPE_UNITS, 0, 0, 0, 5, true),
+            ProductEntity("QRS-5", "בורג", "555", "A-02", 2, ProductEntity.TYPE_UNITS, 0, 0, 0, 8, true),
+            // Scanned much later: a second code for ABC-123, same shelf.
+            ProductEntity("ABC-123", "פילטר", "222", "A-01", 47, ProductEntity.TYPE_UNITS, 0, 0, 0, 7, true)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+        val readBack = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products
+
+        assertEquals(
+            listOf("ABC-123", "ABC-123", "XYZ-9", "QRS-5"),
+            readBack.map { it.sku }
+        )
+        // Within the sku, still the order they were counted in.
+        assertEquals(listOf("111", "222"), readBack.filter { it.sku == "ABC-123" }.map { it.barcode })
+    }
+
+    /**
      * Reloading the locations file must not mistake its summary for barcodes.
      *
      * The reader treats the *second* worksheet as the ברקודים כפולים sheet,
