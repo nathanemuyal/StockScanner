@@ -97,6 +97,28 @@ class SkuBarcodeIntegrityTest {
     }
 
     /** Drives ProductConfirmActivity -> InventoryActivity for [sku]/[scannedBarcode]/[location], entering [quantity]. */
+    /**
+     * Answers the "what is this sticker on?" question a genuinely new ברקוד
+     * now raises, the way a worker with nothing to add would: dismiss it and
+     * let the code stay a plain single unit. Tests that care about roles set
+     * them up on the barcodes table directly instead.
+     */
+    private fun reassignConfirmationDialog(): AlertDialog? =
+        (ShadowDialog.getLatestDialog() as? AlertDialog)?.takeIf { it.isShowing && it.listView == null }
+
+    private fun barcodeRoleDialog(): AlertDialog? =
+        // The app builds appcompat dialogs, which ShadowAlertDialog does not
+        // track — only android.app ones. ShadowDialog sees both.
+        (ShadowDialog.getLatestDialog() as? AlertDialog)
+            ?.takeIf { it.isShowing && it.listView?.adapter?.count == 4 }
+
+    private fun dismissBarcodeRoleDialogIfShown() {
+        val dialog = barcodeRoleDialog() ?: return
+        val list = dialog.listView!!
+        // The last item is "לא יודע" — leaves the code a plain single unit.
+        list.performItemClick(null, list.adapter.count - 1, list.adapter.getItemId(list.adapter.count - 1))
+    }
+
     private fun confirmAndRecordQuantity(
         sku: String,
         description: String,
@@ -115,6 +137,8 @@ class SkuBarcodeIntegrityTest {
 
         val confirmActivity = Robolectric.buildActivity(ProductConfirmActivity::class.java, confirmIntent).setup().get()
         confirmActivity.findViewById<Button>(R.id.btnConfirm).performClick()
+        awaitUntil { barcodeRoleDialog() != null || shadowOf(confirmActivity).peekNextStartedActivityForResult() != null }
+        dismissBarcodeRoleDialogIfShown()
 
         awaitUntil { shadowOf(confirmActivity).peekNextStartedActivityForResult() != null }
         val inventoryIntent = shadowOf(confirmActivity).nextStartedActivityForResult.intent
@@ -195,16 +219,19 @@ class SkuBarcodeIntegrityTest {
         confirmAndRecordQuantity("ABC-123", "מצבר 12V", primaryBarcode, secondBarcode, "A-01-05", 5)
 
         // Both barcodes now have their own row at that location — a distinct
-        // row per scan, never siloed into a separate "aliases" file.
+        // row per scan, because the shelf's count is per (מקט, מיקום, ברקוד).
         val rows = savedLocationsRows()
         assertEquals(2, rows.size)
         assertTrue(rows.all { it.sku == "ABC-123" && it.location == "A-01-05" })
         assertEquals(setOf(primaryBarcode, secondBarcode), rows.map { it.barcode }.toSet())
         assertTrue("neither row's barcode column may ever be the sku", rows.none { it.barcode == it.sku })
 
-        val aliasFile = context.repository.multipleBarcodesFile()!!
-        val aliases = aliasFile.inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
-        assertTrue("a normal scan no longer writes to the aliases file", aliases.isEmpty())
+        // ...and both codes are on file, which is the other half of the job:
+        // a second sticker discovered at a shelf is exactly what a count is
+        // there to turn up, and it has to survive into the barcodes file.
+        val barcodeFile = context.repository.multipleBarcodesFile()!!
+        val barcodes = barcodeFile.inputStream().use { ExcelReader.readMultipleBarcodesFromStream(it) }
+        assertEquals(setOf(primaryBarcode, secondBarcode), barcodes.map { it.barcode }.toSet())
     }
 
     // --- 4. Barcode not found -> search by description -> confirm -----------
@@ -304,8 +331,13 @@ class SkuBarcodeIntegrityTest {
             Intent().putExtra(SearchActivity.EXTRA_SELECTED_SKU, "RIGHT-1")
         )
 
-        awaitUntil { ShadowDialog.getLatestDialog() != null }
-        (ShadowDialog.getLatestDialog() as AlertDialog).getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        // getLatestDialog() reports the last dialog CREATED, dismissed or
+        // not, so an earlier "what is this sticker on?" prompt would satisfy
+        // a bare null check and leave this clicking a button that dialog has
+        // not got. Wait for the reassign confirmation itself: showing, and
+        // not a list dialog.
+        awaitUntil { reassignConfirmationDialog() != null }
+        reassignConfirmationDialog()!!.getButton(DialogInterface.BUTTON_POSITIVE).performClick()
 
         // The screen restarts itself for RIGHT-1 — drain the stale queued
         // launch, then read the reopened intent, exactly like ProductConfirmActivityTest does.

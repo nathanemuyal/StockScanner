@@ -1,6 +1,6 @@
 package com.warehouse.stockscanner.excel
 
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -175,8 +175,8 @@ class ExcelWriterRoundTripTest {
     fun `barcode aliases round-trip through their own sheet, separate from the product rows`() {
         val products = listOf(ProductEntity("ABC-123", "מוצר", "111", "A-01-05", 0))
         val aliases = listOf(
-            BarcodeAliasEntity(barcode = "222", sku = "ABC-123"),
-            BarcodeAliasEntity(barcode = "333", sku = "ABC-123")
+            BarcodeEntity(barcode = "222", sku = "ABC-123"),
+            BarcodeEntity(barcode = "333", sku = "ABC-123")
         )
         val bytes = ByteArrayOutputStream().also {
             ExcelWriter.writeProductsToStream(it, products, aliases)
@@ -184,8 +184,8 @@ class ExcelWriterRoundTripTest {
 
         val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
         assertEquals(1, result.products.size) // aliases never turn into extra product rows
-        assertEquals(setOf("222", "333"), result.barcodeAliases.map { it.barcode }.toSet())
-        assertTrue(result.barcodeAliases.all { it.sku == "ABC-123" })
+        assertEquals(setOf("222", "333"), result.barcodes.map { it.barcode }.toSet())
+        assertTrue(result.barcodes.all { it.sku == "ABC-123" })
     }
 
     @Test
@@ -196,7 +196,105 @@ class ExcelWriterRoundTripTest {
         }.toByteArray()
 
         val result = ByteArrayInputStream(bytes).use { ExcelReader.readProductsFromStream(it) }
-        assertTrue(result.barcodeAliases.isEmpty())
+        assertTrue(result.barcodes.isEmpty())
+    }
+
+    /**
+     * The barcodes working file is what a worker hands back, so a role
+     * discovered during a count has to survive the trip out and back in —
+     * otherwise the next count re-asks every question this one answered.
+     */
+    @Test
+    fun `packaging roles survive a write and read of the barcodes file`() {
+        val barcodes = listOf(
+            BarcodeEntity(barcode = "222", sku = "ABC-123", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12),
+            BarcodeEntity(barcode = "333", sku = "ABC-123", role = BarcodeEntity.ROLE_MIXED, packageContent = 6),
+            BarcodeEntity(barcode = "444", sku = "XYZ-9", role = BarcodeEntity.ROLE_UNIT)
+        )
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר שמן", "111", "A-01-05", 0),
+            ProductEntity("XYZ-9", "אום", "444", "B-02-01", 1)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeMultipleBarcodesToStream(out, barcodes, products)
+            out.toByteArray()
+        }
+        val readBack = ExcelReader.readMultipleBarcodesFromStream(ByteArrayInputStream(bytes))
+
+        assertEquals(listOf("222", "333", "444"), readBack.map { it.barcode })
+        assertEquals(listOf("אריזה", "מעורב", "בודד"), readBack.map { it.role })
+        assertEquals(listOf(12, 6, 0), readBack.map { it.packageContent })
+    }
+
+    /**
+     * A person opens this file too. A code on a single unit has no package,
+     * so its תכולה cell is left empty rather than stating a zero — most of
+     * the file is such codes, and a column of zeroes reads as a real figure
+     * worth checking. Asserted on the written cell, since reading it back
+     * cannot tell an empty cell from a 0.
+     */
+    @Test
+    fun `a single-unit code leaves the package content cell empty`() {
+        val barcodes = listOf(
+            BarcodeEntity(barcode = "444", sku = "XYZ-9", role = BarcodeEntity.ROLE_UNIT),
+            BarcodeEntity(barcode = "222", sku = "XYZ-9", role = BarcodeEntity.ROLE_PACKAGE, packageContent = 12)
+        )
+        val products = listOf(ProductEntity("XYZ-9", "אום", "444", "B-02-01", 0))
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeMultipleBarcodesToStream(out, barcodes, products)
+            out.toByteArray()
+        }
+        val sheet = sheetXmlOf(bytes)
+
+        // Row 2 is the בודד code: no תכולה cell value at all.
+        assertFalse("a בודד row should carry no package content", sheet.contains(">0<"))
+        // Row 3 is the אריזה code, which still states its 12.
+        assertTrue("an אריזה row must still state its content", sheet.contains(">12<"))
+    }
+
+    /**
+     * The stamp has to reach the file a worker hands back, not just the
+     * database. Settling which of two counts is the fresh one happens over
+     * the spreadsheet, and until now the column simply was not there.
+     */
+    @Test
+    fun `when a row was counted survives a write and read`() {
+        val counted = 1_726_000_000_000L
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 10, true, counted),
+            // Placed but never counted — no date belongs on it.
+            ProductEntity("XYZ-9", "אום", "222", "B-02", 1, ProductEntity.TYPE_UNITS, 0, 0, 0, 0, true, 0L)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+        val readBack = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products.associateBy { it.sku }
+
+        // Written for people, so it round-trips to the minute rather than the
+        // millisecond — the database keeps the exact value.
+        assertEquals(counted / 60000L, readBack.getValue("ABC-123").countedAt / 60000L)
+        assertEquals(0L, readBack.getValue("XYZ-9").countedAt)
+    }
+
+    /** A file written before the column existed still loads, reading as never counted. */
+    @Test
+    fun `a detail sheet without the counted-at column still loads`() {
+        val bytes = ByteArrayOutputStream().use { out ->
+            // writeProductsToStream is the legacy shape the reader still accepts.
+            ExcelWriter.writeProductsToStream(
+                out,
+                listOf(ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 10, true, 0L))
+            )
+            out.toByteArray()
+        }
+
+        val row = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products.single()
+        assertEquals(10, row.quantity)
+        assertEquals(0L, row.countedAt)
     }
 
     /** Reads the "סיכום" sheet of a locations file back as raw rows. */
@@ -333,6 +431,6 @@ class ExcelWriterRoundTripTest {
         val result = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes))
 
         assertEquals(2, result.products.size)
-        assertTrue("the summary must not become barcode rows", result.barcodeAliases.isEmpty())
+        assertTrue("the summary must not become barcode rows", result.barcodes.isEmpty())
     }
 }

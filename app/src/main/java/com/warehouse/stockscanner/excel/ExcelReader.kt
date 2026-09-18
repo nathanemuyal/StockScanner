@@ -3,7 +3,7 @@ package com.warehouse.stockscanner.excel
 import android.content.Context
 import android.net.Uri
 import android.util.Xml
-import com.warehouse.stockscanner.data.BarcodeAliasEntity
+import com.warehouse.stockscanner.data.BarcodeEntity
 import com.warehouse.stockscanner.data.ProductEntity
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayOutputStream
@@ -12,22 +12,48 @@ import java.util.zip.ZipInputStream
 class ExcelFormatException(message: String) : Exception(message)
 
 /**
- * Result of reading the source file. [duplicateRows] and [duplicateBarcodeRows]
+ * Result of reading the source file. [duplicateRows] and [conflictingBarcodes]
  * let the caller warn the user about data-quality issues instead of silently
- * dropping or mismatching rows. [barcodeAliases] are extra barcodes attached
- * to a sku that already has its own primary one — read from the "ברקודים
- * כפולים" worksheet this app's own writer produces; empty for a source file
- * that never had one (e.g. a fresh export from another system).
+ * dropping or mismatching rows.
+ *
+ * [conflictingBarcodes] holds the codes themselves, not just how many, because
+ * the only useful thing to say about one is which code to go and look at: a
+ * count against a file with thousands of rows cannot act on a number alone. It
+ * covers both a code two מקטים claim on the product sheet and one claimed by
+ * a different מקט on each of the two sheets — either way only one claim can
+ * survive, and the loser's units would be counted onto the wrong product. Each
+ * code appears once however many ways it is contested, so the list is a count
+ * of ambiguous codes rather than of claims against them.
+ *
+ * [barcodes] are extra barcodes attached to a sku that already has its own
+ * primary one — read from the "ברקודים כפולים" worksheet this app's own
+ * writer produces; empty for a source file that never had one (e.g. a fresh
+ * export from another system).
  */
 data class ExcelLoadResult(
     val products: List<ProductEntity>,
     val duplicateRows: Int,
-    val duplicateBarcodeRows: Int,
-    val barcodeAliases: List<BarcodeAliasEntity> = emptyList()
-)
+    val conflictingBarcodes: List<String>,
+    val barcodes: List<BarcodeEntity> = emptyList()
+) {
+    /** How many distinct codes are contested — one per code, never one per claim. */
+    val duplicateBarcodeRows: Int get() = conflictingBarcodes.size
+}
 
-/** One row of the standalone "multiple barcodes" working file: a מקט, its description, and one extra ברקוד aliased to it. */
-data class BarcodeFileRow(val sku: String, val description: String, val barcode: String)
+/**
+ * One row of the standalone "multiple barcodes" working file: a מקט, its
+ * description, one ברקוד belonging to it, and what a scan of that code means
+ * — its packaging [role] and how many units a package holds. The two role
+ * columns are optional, so a file written before they existed reads back as
+ * plain single units.
+ */
+data class BarcodeFileRow(
+    val sku: String,
+    val description: String,
+    val barcode: String,
+    val role: String = BarcodeEntity.ROLE_UNIT,
+    val packageContent: Int = 0
+)
 
 /**
  * Minimal, dependency-free XLSX reader built directly on java.util.zip and
@@ -51,9 +77,12 @@ object ExcelReader {
     private const val COL_PACKAGE_COUNT = "כמות אריזות"
     private const val COL_LOOSE_UNITS = "יחידות בודדות"
     private const val COL_QUANTITY = "כמות יחידות"
+    private const val COL_COUNTED_AT = "נספר בתאריך"
 
     private const val COL_ALIAS_BARCODE = "ברקוד"
     private const val COL_ALIAS_SKU = "מקט"
+    private const val COL_BARCODE_ROLE = "תפקיד"
+    private const val COL_BARCODE_CONTENT = "תכולה"
 
     // The working file only ever has a single "מיקום" column — a product at
     // several locations is several rows, not several columns. Numbered
@@ -80,16 +109,36 @@ object ExcelReader {
         // A second worksheet, if present, is only ever treated as the
         // ברקודים כפולים sheet when its headers actually match — a random
         // second sheet in a source file from elsewhere is otherwise ignored.
-        val aliases = sheets.getOrNull(1)?.let { parseAliasSheet(it, sharedStrings) } ?: emptyList()
+        val aliases = sheets.getOrNull(1)?.let { parseBarcodeSheet(it, sharedStrings) } ?: emptyList()
 
-        return productResult.copy(barcodeAliases = aliases)
+        // A code can be claimed by one מקט on a product row and by another on
+        // the barcodes sheet. Only one claim can survive — the sheet's, since
+        // it states ownership outright while a product row merely implies it
+        // — and the loser's units would be counted onto the wrong product
+        // with nothing on screen to say so. Collected here rather than in
+        // parseSheet, which never sees the second worksheet.
+        val skuByProductBarcode = HashMap<String, String>()
+        for (product in productResult.products) {
+            if (product.barcode.isNotBlank()) skuByProductBarcode.putIfAbsent(product.barcode, product.sku)
+        }
+        val crossSheetConflicts = aliases
+            .filter { alias -> skuByProductBarcode[alias.barcode]?.let { it != alias.sku } == true }
+            .map { it.barcode }
+
+        // Union, not sum: a code contested on the product sheet *and* claimed
+        // again by the barcodes sheet is still one code to go and check, and
+        // reporting it twice would overstate how much of the file is in doubt.
+        return productResult.copy(
+            barcodes = aliases,
+            conflictingBarcodes = (productResult.conflictingBarcodes + crossSheetConflicts).distinct()
+        )
     }
 
     /**
      * Reads a standalone "multiple barcodes" working file — the format
      * [com.warehouse.stockscanner.excel.ExcelWriter.writeMultipleBarcodesToStream]
-     * produces: a single sheet with מקט, תיאור and ברקוד columns, one row per
-     * extra barcode aliased to a sku that already has its own primary one.
+     * produces: a single sheet with מקט, תיאור and ברקוד columns, plus the
+     * optional תפקיד/תכולה pair, one row per ברקוד the count knows.
      */
     fun readMultipleBarcodesFromStream(input: java.io.InputStream): List<BarcodeFileRow> {
         val (sharedStrings, sheets) = extractSheets(input)
@@ -98,6 +147,8 @@ object ExcelReader {
         val skuCol = headers[COL_ALIAS_SKU] ?: throw ExcelFormatException("בקובץ חסרה העמודה: $COL_ALIAS_SKU")
         val barcodeCol = headers[COL_ALIAS_BARCODE] ?: throw ExcelFormatException("בקובץ חסרה העמודה: $COL_ALIAS_BARCODE")
         val descCol = headers[COL_DESCRIPTION]
+        val roleCol = headers[COL_BARCODE_ROLE]
+        val contentCol = headers[COL_BARCODE_CONTENT]
 
         // De-duplicated by barcode, last row wins — same spirit as the product sheet.
         val byBarcode = LinkedHashMap<String, BarcodeFileRow>()
@@ -106,7 +157,15 @@ object ExcelReader {
             val sku = row[skuCol]?.trim().orEmpty()
             if (barcode.isEmpty() || sku.isEmpty()) continue
             val description = descCol?.let { row[it]?.trim() }.orEmpty()
-            byBarcode[barcode] = BarcodeFileRow(sku, description, barcode)
+            val role = roleCol?.let { row[it]?.trim() }
+                ?.takeIf { it in BarcodeEntity.ROLES }
+                ?: BarcodeEntity.ROLE_UNIT
+            val content = if (role == BarcodeEntity.ROLE_UNIT) {
+                0
+            } else {
+                contentCol?.let { row[it]?.trim()?.toIntOrNull() }?.takeIf { it >= 0 } ?: 0
+            }
+            byBarcode[barcode] = BarcodeFileRow(sku, description, barcode, role, content)
         }
         return byBarcode.values.toList()
     }
@@ -187,7 +246,7 @@ object ExcelReader {
     /** A worksheet's header row (by name -> column index) plus every data row that follows it. */
     private data class RawSheet(val headers: Map<String, Int>?, val dataRows: List<Map<Int, String>>)
 
-    /** Walks a worksheet's raw XML into rows, resolving shared strings — shared by [parseSheet] and [parseAliasSheet]. */
+    /** Walks a worksheet's raw XML into rows, resolving shared strings — shared by [parseSheet] and [parseBarcodeSheet]. */
     private fun parseRawSheet(bytes: ByteArray, sharedStrings: List<String>): RawSheet {
         val parser = Xml.newPullParser()
         parser.setInput(bytes.inputStream(), "UTF-8")
@@ -281,6 +340,7 @@ object ExcelReader {
         val packageCountCol = headers[COL_PACKAGE_COUNT]
         val looseUnitsCol = headers[COL_LOOSE_UNITS]
         val quantityCol = headers[COL_QUANTITY]
+        val countedAtCol = headers[COL_COUNTED_AT]
 
         // Every header matching "מיקום" or "מיקום <n>", in ascending order of
         // n (the bare "מיקום" counts as 1) — each becomes its own row for the
@@ -317,7 +377,8 @@ object ExcelReader {
             val packageContent: Int,
             val packageCount: Int,
             val looseUnits: Int,
-            val quantity: Int
+            val quantity: Int,
+            val countedAt: Long
         )
 
         val rawTuples = ArrayList<RawTuple>()
@@ -341,13 +402,18 @@ object ExcelReader {
                 0
             }
             val quantity = quantityCol?.let { row[it]?.trim()?.toIntOrNull() } ?: 0
+            // Optional like the quantity columns, and forgiving for the same
+            // reason: a file written before the column existed, or one whose
+            // date a spreadsheet reformatted on the way through, still loads
+            // — it just reads as never counted rather than failing the load.
+            val countedAt = countedAtCol?.let { parseCountedAt(row[it]?.trim()) } ?: 0L
 
             if (locations.isEmpty()) {
-                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, looseUnits, quantity))
+                rawTuples.add(RawTuple(sku, description, barcode, "", quantityType, packageContent, packageCount, looseUnits, quantity, countedAt))
             } else {
                 for (location in locations) {
                     rawTuples.add(
-                        RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, looseUnits, quantity)
+                        RawTuple(sku, description, barcode, location, quantityType, packageContent, packageCount, looseUnits, quantity, countedAt)
                     )
                 }
             }
@@ -364,7 +430,8 @@ object ExcelReader {
         val products = bySkuLocationAndBarcode.values.mapIndexed { index, t ->
             ProductEntity(
                 t.sku, t.description, t.barcode, t.location, index,
-                t.quantityType, t.packageContent, t.packageCount, t.looseUnits, t.quantity
+                t.quantityType, t.packageContent, t.packageCount, t.looseUnits, t.quantity,
+                countedAt = t.countedAt
             )
         }
         val duplicateRows = rawTuples.size - bySkuLocationAndBarcode.size
@@ -378,34 +445,71 @@ object ExcelReader {
             if (p.barcode.isNotBlank()) barcodeBySku.putIfAbsent(p.sku, p.barcode)
         }
         val barcodes = barcodeBySku.values.toList()
-        val duplicateBarcodeRows = barcodes.size - barcodes.distinct().size
+        // The codes more than one sku claims — reported by code rather than
+        // by how many claims there are, since a worker can only act on the
+        // code itself.
+        val conflictingBarcodes = barcodes.groupBy { it }.filterValues { it.size > 1 }.keys.toList()
 
-        return ExcelLoadResult(products, duplicateRows, duplicateBarcodeRows)
+        return ExcelLoadResult(products, duplicateRows, conflictingBarcodes)
     }
 
     /**
-     * The "ברקודים כפולים" sheet: one row per extra barcode aliased to a sku
-     * that already has its own primary one. Only recognized when the header
-     * row actually has both expected columns — otherwise (an unrelated
-     * second sheet, or none of these headers) this quietly returns nothing,
-     * exactly like a legacy source file with no such sheet at all.
+     * The "ברקודים כפולים" sheet: one row per ברקוד and the מקט it belongs
+     * to. Only recognized when the header row actually has both required
+     * columns — otherwise (an unrelated second sheet, or none of these
+     * headers) this quietly returns nothing, exactly like a legacy source
+     * file with no such sheet at all.
+     *
+     * "תפקיד" and "תכולה" are optional, exactly like the product sheet's
+     * quantity columns: a file exported before they existed still loads, and
+     * every code in it reads as a plain single unit — the same thing the app
+     * assumed when there was no role at all. An unrecognized תפקיד falls
+     * back the same way rather than failing the whole load, since one odd
+     * cell should not cost a worker the entire file.
      */
-    private fun parseAliasSheet(bytes: ByteArray, sharedStrings: List<String>): List<BarcodeAliasEntity> {
+    private fun parseBarcodeSheet(bytes: ByteArray, sharedStrings: List<String>): List<BarcodeEntity> {
         val raw = parseRawSheet(bytes, sharedStrings)
         val headers = raw.headers ?: return emptyList()
         val barcodeCol = headers[COL_ALIAS_BARCODE] ?: return emptyList()
         val skuCol = headers[COL_ALIAS_SKU] ?: return emptyList()
+        val roleCol = headers[COL_BARCODE_ROLE]
+        val contentCol = headers[COL_BARCODE_CONTENT]
 
         // De-duplicated by barcode, last row wins — same spirit as the
         // product sheet's (sku, location) de-duplication.
-        val byBarcode = LinkedHashMap<String, String>()
+        val byBarcode = LinkedHashMap<String, BarcodeEntity>()
         for (row in raw.dataRows) {
             val barcode = row[barcodeCol]?.trim().orEmpty()
             val sku = row[skuCol]?.trim().orEmpty()
             if (barcode.isEmpty() || sku.isEmpty()) continue
-            byBarcode[barcode] = sku
+            val role = roleCol?.let { row[it]?.trim() }
+                ?.takeIf { it in BarcodeEntity.ROLES }
+                ?: BarcodeEntity.ROLE_UNIT
+            // Meaningless without a package to hold anything, so a stray
+            // value under בודד is dropped rather than left to mislead.
+            val content = if (role == BarcodeEntity.ROLE_UNIT) {
+                0
+            } else {
+                contentCol?.let { row[it]?.trim()?.toIntOrNull() }?.takeIf { it >= 0 } ?: 0
+            }
+            byBarcode[barcode] = BarcodeEntity(barcode = barcode, sku = sku, role = role, packageContent = content)
         }
-        return byBarcode.map { (barcode, sku) -> BarcodeAliasEntity(barcode = barcode, sku = sku) }
+        return byBarcode.values.toList()
+    }
+
+    /**
+     * Reads back the human-facing stamp the writer produces. Anything that
+     * is not in that shape — blank, a spreadsheet's own reformatting, a
+     * file from before the column existed — reads as never counted, which
+     * is the honest answer when the file does not say.
+     */
+    private fun parseCountedAt(value: String?): Long {
+        if (value.isNullOrBlank()) return 0L
+        return try {
+            java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).parse(value)?.time ?: 0L
+        } catch (e: java.text.ParseException) {
+            0L
+        }
     }
 
     private fun buildHeaderMap(row: Map<Int, String>): Map<String, Int> {

@@ -106,5 +106,62 @@ for r_idx, (sku, loc3, desc, barcode, loc1, loc2) in enumerate(rows4, start=2):
 
 wb4.save(os.path.join(OUT_DIR, "sample_multi_location.xlsx"))
 
+# --- Fixture 5: the "ברקודים כפולים" sheet, in both shapes the app must
+# accept. The second sheet carries תפקיד/תכולה for codes whose packaging is
+# known, omits them for one that is just a plain code, and includes a תפקיד
+# the app does not recognise — one odd cell must not cost a worker the file.
+wb5 = openpyxl.Workbook()
+ws5 = wb5.active
+ws5.title = "Products"
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "מיקום"], start=1):
+    ws5.cell(row=1, column=col, value=h).font = Font(bold=True)
+for r_idx, row in enumerate(
+    [
+        ("ABC-123", "פילטר שמן", "111", "A-01-05"),
+        ("XYZ-9", "אום", "444", ""),
+    ],
+    start=2,
+):
+    for c_idx, v in enumerate(row, start=1):
+        ws5.cell(row=r_idx, column=c_idx, value=v)
+
+ws5b = wb5.create_sheet("ברקודים כפולים")
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "תפקיד", "תכולה"], start=1):
+    ws5b.cell(row=1, column=col, value=h).font = Font(bold=True)
+for r_idx, row in enumerate(
+    [
+        ("ABC-123", "פילטר שמן", "222", "אריזה", 12),
+        ("ABC-123", "פילטר שמן", "333", "מעורב", 6),
+        ("XYZ-9", "אום", "555", "", ""),            # no role given at all
+        ("XYZ-9", "אום", "666", "קרטון", 24),        # a role the app does not know
+    ],
+    start=2,
+):
+    for c_idx, v in enumerate(row, start=1):
+        ws5b.cell(row=r_idx, column=c_idx, value=v)
+
+wb5.save(os.path.join(OUT_DIR, "sample_barcode_roles.xlsx"))
+
+# --- Fixture 6: a file exported before roles existed — the barcodes sheet
+# has only the three original columns and must still load.
+wb6 = openpyxl.Workbook()
+ws6 = wb6.active
+ws6.title = "Products"
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "מיקום"], start=1):
+    ws6.cell(row=1, column=col, value=h).font = Font(bold=True)
+ws6.cell(row=2, column=1, value="ABC-123")
+ws6.cell(row=2, column=2, value="פילטר שמן")
+ws6.cell(row=2, column=3, value="111")
+ws6.cell(row=2, column=4, value="A-01-05")
+
+ws6b = wb6.create_sheet("ברקודים כפולים")
+for col, h in enumerate(["מקט", "תאור", "ברקוד"], start=1):
+    ws6b.cell(row=1, column=col, value=h).font = Font(bold=True)
+ws6b.cell(row=2, column=1, value="ABC-123")
+ws6b.cell(row=2, column=2, value="פילטר שמן")
+ws6b.cell(row=2, column=3, value="222")
+
+wb6.save(os.path.join(OUT_DIR, "sample_barcode_roles_legacy.xlsx"))
+
 print("Fixtures written to", OUT_DIR)
 print(os.listdir(OUT_DIR))
