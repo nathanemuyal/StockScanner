@@ -15,18 +15,18 @@ import java.util.zip.ZipInputStream
 @RunWith(RobolectricTestRunner::class)
 class ExcelWriterRoundTripTest {
 
-    /** Raw text of the written sheet, to check actual column headers/cells. */
-    private fun sheetXmlOf(bytes: ByteArray): String {
+    /** Raw text of a written sheet, to check actual column headers/cells. */
+    private fun sheetXmlOf(bytes: ByteArray, entryName: String = "sheet1.xml"): String {
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
-                if (entry.name == "xl/worksheets/sheet1.xml") {
+                if (entry.name == "xl/worksheets/$entryName") {
                     return zip.readBytes().toString(Charsets.UTF_8)
                 }
                 entry = zip.nextEntry
             }
         }
-        error("sheet1.xml not found in written archive")
+        error("$entryName not found in written archive")
     }
 
     @Test
@@ -295,5 +295,112 @@ class ExcelWriterRoundTripTest {
         val row = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products.single()
         assertEquals(10, row.quantity)
         assertEquals(0L, row.countedAt)
+    }
+
+    /** Reads the "סיכום" sheet of a locations file back as raw rows. */
+    private fun summarySheetOf(bytes: ByteArray): List<List<String>> {
+        val rows = mutableListOf<List<String>>()
+        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (entry.name == "xl/worksheets/sheet2.xml") {
+                    val xml = zip.readBytes().toString(Charsets.UTF_8)
+                    for (row in Regex("<row[^>]*>(.*?)</row>", RegexOption.DOT_MATCHES_ALL).findAll(xml)) {
+                        rows += Regex("<t[^>]*>(.*?)</t>", RegexOption.DOT_MATCHES_ALL)
+                            .findAll(row.groupValues[1]).map { it.groupValues[1] }.toList()
+                    }
+                }
+                entry = zip.nextEntry
+            }
+        }
+        return rows
+    }
+
+    /**
+     * The count's actual answer. A shelf can hold the same מקט under two
+     * barcodes — a package code and a single-unit code — and each is counted
+     * on its own row, so the detail sheet alone cannot say how many there
+     * are without someone adding rows up by hand.
+     */
+    @Test
+    fun `the locations file carries a summary that totals each sku by location and overall`() {
+        val products = listOf(
+            // One shelf, two barcodes: 3 packages of 12, plus 7 loose singles.
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_PACKAGE, 12, 3, 0, 36, true),
+            ProductEntity("ABC-123", "פילטר", "222", "A-01", 1, ProductEntity.TYPE_UNITS, 0, 0, 0, 7, true),
+            // ...and the same sku on a second shelf.
+            ProductEntity("ABC-123", "פילטר", "111", "B-03", 2, ProductEntity.TYPE_UNITS, 0, 0, 0, 15, true),
+            ProductEntity("XYZ-9", "אום", "444", "A-01", 3, ProductEntity.TYPE_UNITS, 0, 0, 0, 5, true)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+
+        val summary = summarySheetOf(bytes)
+        assertEquals(listOf("מקט", "תאור", "מיקום", "סה״כ יחידות"), summary.first())
+
+        val body = summary.drop(1).map { listOf(it[0], it[2], it[3]) }
+        assertEquals(
+            listOf(
+                listOf("ABC-123", "A-01", "43"),   // 36 packaged + 7 loose, one shelf, two codes
+                listOf("ABC-123", "B-03", "15"),
+                listOf("ABC-123", "סה״כ", "58"),
+                listOf("XYZ-9", "A-01", "5"),
+                listOf("XYZ-9", "סה״כ", "5")
+            ),
+            body
+        )
+    }
+
+    /** The detail sheet is the audit trail and must not change shape because a summary was added. */
+    @Test
+    fun `adding the summary leaves the detail sheet readable exactly as before`() {
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_PACKAGE, 12, 3, 0, 36, true)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+        val readBack = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes)).products
+
+        val row = readBack.single()
+        assertEquals("ABC-123", row.sku)
+        assertEquals("A-01", row.location)
+        assertEquals(ProductEntity.TYPE_PACKAGE, row.quantityType)
+        assertEquals(36, row.quantity)
+    }
+
+    /**
+     * Reloading the locations file must not mistake its summary for barcodes.
+     *
+     * The reader treats the *second* worksheet as the ברקודים כפולים sheet,
+     * and this file now has one — the summary. It is ignored only because
+     * parseBarcodeSheet insists on a ברקוד column the summary has no reason
+     * to carry, which is a load-bearing coincidence rather than a decision.
+     * Pinning it here so that giving the summary a barcode column one day
+     * fails as a test instead of as a warehouse full of aliases nobody made.
+     */
+    @Test
+    fun `reloading the locations file does not read its summary as barcodes`() {
+        val products = listOf(
+            ProductEntity("ABC-123", "פילטר", "111", "A-01", 0, ProductEntity.TYPE_UNITS, 0, 0, 0, 43, true),
+            ProductEntity("ABC-123", "פילטר", "222", "B-03", 1, ProductEntity.TYPE_UNITS, 0, 0, 0, 15, true)
+        )
+
+        val bytes = ByteArrayOutputStream().use { out ->
+            ExcelWriter.writeLocationsQuantitiesToStream(out, products)
+            out.toByteArray()
+        }
+        // The summary really is sheet 2 of this file, so the risk is live.
+        assertTrue(sheetXmlOf(bytes, "sheet2.xml").contains("סה״כ"))
+
+        val result = ExcelReader.readProductsFromStream(ByteArrayInputStream(bytes))
+
+        assertEquals(2, result.products.size)
+        assertTrue("the summary must not become barcode rows", result.barcodes.isEmpty())
     }
 }
