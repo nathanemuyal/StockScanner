@@ -55,8 +55,6 @@ object ExcelWriter {
         COL_COUNTED_AT
     )
 
-    private val SUMMARY_HEADERS = listOf(COL_SKU, COL_DESCRIPTION, COL_LOCATION, COL_SUMMARY_TOTAL)
-
     /**
      * Written for a person to read, not for a machine to round-trip: a count
      * that gets questioned is settled by someone looking at two rows and
@@ -69,6 +67,8 @@ object ExcelWriter {
     /** Blank for a row nothing has counted — 0 is not a date, and 1970 on a shelf report is noise. */
     private fun formatCountedAt(countedAt: Long): String =
         if (countedAt > 0L) COUNTED_AT_FORMAT.format(java.util.Date(countedAt)) else ""
+
+    private val SUMMARY_HEADERS = listOf(COL_SKU, COL_DESCRIPTION, COL_LOCATION, COL_SUMMARY_TOTAL)
 
     // Order matches the task spec's example: מק"ט, תיאור, ברקוד — then what
     // a scan of that code means, which is the point of keeping the sheet.
