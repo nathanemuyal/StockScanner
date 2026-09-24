@@ -17,8 +17,9 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.warehouse.stockscanner.scan.AimSelector
+import com.warehouse.stockscanner.scan.MultiPassScanner
 import com.warehouse.stockscanner.scan.ScanConsensus
-import com.warehouse.stockscanner.scan.toScanCandidate
+import com.warehouse.stockscanner.scan.ShelfLabelFilter
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -48,10 +49,11 @@ class ScanAccuracyTest {
 
     companion object {
         private const val TAG = "ScanAccuracyTest"
-        private const val MIN_DETECTION_RATE = 0.85
-        private const val MIN_SMALL_DETECTION_RATE = 0.80
+        /** Required detection rate for every category below. */
+        private const val MIN_DETECTION_RATE = 0.95
 
         private lateinit var productScanner: BarcodeScanner
+        private lateinit var locationScanner: BarcodeScanner
 
         @BeforeClass
         @JvmStatic
@@ -70,16 +72,22 @@ class ScanAccuracyTest {
                     )
                     .build()
             )
+            locationScanner = BarcodeScanning.getClient(
+                BarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE, Barcode.FORMAT_DATA_MATRIX)
+                    .build()
+            )
         }
 
         @AfterClass
         @JvmStatic
-        fun tearDown() = productScanner.close()
+        fun tearDown() {
+            productScanner.close()
+            locationScanner.close()
+        }
 
         /** Photo -> the value printed under its barcode (read off the photo by eye). */
         val LABELED = mapOf(
-            "warehouse_151045.jpg" to "4007817530627",
-            "warehouse_151101.jpg" to "7290019629528",
             "warehouse_151107.jpg" to "7290019629528",
             "warehouse_151109.jpg" to "7290019629528",
             "warehouse_151118.jpg" to "4714218000139",
@@ -158,15 +166,6 @@ class ScanAccuracyTest {
             ?: error("Failed to decode $path")
     }
 
-    private fun detect(bitmap: Bitmap): List<Barcode> {
-        val latch = CountDownLatch(1)
-        var result: List<Barcode> = emptyList()
-        productScanner.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { result = it }
-            .addOnCompleteListener { latch.countDown() }
-        assertTrue("ML Kit timed out", latch.await(20, TimeUnit.SECONDS))
-        return result
-    }
 
     /** Small hand-held variations of one shot: none, 90% scale, darker, 4° tilt. */
     private fun burst(src: Bitmap): List<Bitmap> {
@@ -185,11 +184,20 @@ class ScanAccuracyTest {
         )
     }
 
-    /** Runs the exact pipeline ScannerActivity runs, frame by frame. */
-    private fun scanBurst(bitmap: Bitmap): String? {
+    /**
+     * Runs the exact pipeline ScannerActivity runs, frame by frame:
+     * multi-pass decode -> shelf-label filter (product mode) -> aim -> consensus.
+     */
+    private fun scanBurst(
+        bitmap: Bitmap,
+        locationMode: Boolean = false,
+        currentLocation: String? = null
+    ): String? {
+        val multiPass = MultiPassScanner(if (locationMode) locationScanner else productScanner)
         val consensus = ScanConsensus()
         for (frame in burst(bitmap)) {
-            val candidates = detect(frame).mapNotNull { it.toScanCandidate() }
+            var candidates = multiPass.scan(frame, 0)
+            if (!locationMode) candidates = candidates.filterNot { ShelfLabelFilter.isShelfLabel(it, currentLocation) }
             val confirmed = consensus.offer(AimSelector.pick(candidates, frame.width, frame.height))
             if (confirmed != null) return confirmed
         }
@@ -251,6 +259,26 @@ class ScanAccuracyTest {
     }
 
     @Test
+    fun shelfPhotos_locationModeReadsTheLabelUnderTheCrosshair() {
+        // Shelf photos with product barcodes above the label; the crosshair
+        // is on/next to the label.
+        assertEquals("07016001", scanBurst(loadBitmap("warehouse_151045.jpg"), locationMode = true))
+        assertEquals("07028001", scanBurst(loadBitmap("warehouse_151101.jpg"), locationMode = true))
+    }
+
+    @Test
+    fun shelfPhotos_productModeNeverReturnsAShelfLabel() {
+        // The worker is on shelf 07-01-70-01 (label 07017001). The label of
+        // this or any neighboring shelf in view must not come back as a
+        // "product" — before ShelfLabelFilter these returned 07016001 / 07028001.
+        for (name in listOf("warehouse_151045.jpg", "warehouse_151101.jpg")) {
+            val got = scanBurst(loadBitmap(name), currentLocation = "07017001")
+            Log.i(TAG, "product mode on shelf photo $name -> $got")
+            assertTrue("$name returned shelf label $got as a product", got !in setOf("07016001", "07028001"))
+        }
+    }
+
+    @Test
     fun photoWithNoBarcode_producesNothing() {
         // A hand-held scanner device with a keypad and a screen — lots of
         // stripy, high-contrast detail but no barcode.
@@ -261,7 +289,9 @@ class ScanAccuracyTest {
     fun dataMatrixOnAProduct_isReadInProductMode() {
         val got = scanBurst("web_datamatrix_code_on_a_bottle_of_milk.jpg")
         Log.i(TAG, "milk bottle Data Matrix -> $got")
-        assertTrue("Expected the Data Matrix on the bottle cap to be read", !got.isNullOrBlank())
+        // A GS1 marking code, exactly as ML Kit returns it: a leading ASCII 29
+        // (FNC1), GTIN 04607078117294 (AI 01), a serial (AI 21), ASCII 29, AI 93.
+        assertEquals("\u001D0104607078117294215fGHNL\u001D93H/xN", got)
     }
 
     @Test
@@ -275,6 +305,7 @@ class ScanAccuracyTest {
             tally.record(name, expected, scanBurst(Bitmap.createScaledBitmap(small, src.width, src.height, true)))
         }
         tally.assertNoWrongValues()
+        tally.assertRateAtLeast(MIN_DETECTION_RATE)
     }
 
     @Test
@@ -285,14 +316,12 @@ class ScanAccuracyTest {
         for ((name, expected) in SMALL_READABLE) {
             readable.record(name, expected, scanBurst(inCameraFrame(loadBitmap(name))))
         }
-        readable.assertNoWrongValues()
-        readable.assertRateAtLeast(MIN_SMALL_DETECTION_RATE)
-
         val tiny = Tally("tiny-in-frame")
         for ((name, expected) in SMALL_TINY) {
             tiny.record(name, expected, scanBurst(inCameraFrame(loadBitmap(name))))
         }
-        tiny.assertNoWrongValues()
+        for (t in listOf(readable, tiny)) t.assertNoWrongValues()
+        for (t in listOf(readable, tiny)) t.assertRateAtLeast(MIN_DETECTION_RATE)
     }
 
     @Test
@@ -303,18 +332,21 @@ class ScanAccuracyTest {
             tally.record(name, expected, scanBurst(name))
         }
         tally.assertNoWrongValues()
+        tally.assertRateAtLeast(MIN_DETECTION_RATE)
     }
 
     @Test
     fun lowResolutionPhotos_areNeverMisread() {
         // Whole shelf/product photos at 640 and 480 px: every barcode in them
         // becomes small and soft, as with a cheap or low-resolution camera.
-        for (longSide in listOf(640, 480)) {
-            val tally = Tally("lowres-$longSide")
-            for ((name, expected) in LABELED) {
-                tally.record(name, expected, scanBurst(lowRes(loadBitmap(name), longSide)))
+        val tallies = listOf(640, 480).map { longSide ->
+            Tally("lowres-$longSide").also { tally ->
+                for ((name, expected) in LABELED) {
+                    tally.record(name, expected, scanBurst(lowRes(loadBitmap(name), longSide)))
+                }
             }
-            tally.assertNoWrongValues()
         }
+        for (t in tallies) t.assertNoWrongValues()
+        for (t in tallies) t.assertRateAtLeast(MIN_DETECTION_RATE)
     }
 }

@@ -10,7 +10,9 @@ data class ScanCandidate(
     val left: Float,
     val top: Float,
     val right: Float,
-    val bottom: Float
+    val bottom: Float,
+    /** ML Kit's corner points x0,y0..x3,y3, clockwise from the code's own top-left; null if unknown. */
+    val corners: FloatArray? = null
 ) {
     val centerX: Float get() = (left + right) / 2f
     val centerY: Float get() = (top + bottom) / 2f

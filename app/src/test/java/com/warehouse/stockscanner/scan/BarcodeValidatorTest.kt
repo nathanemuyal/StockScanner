@@ -64,6 +64,16 @@ class BarcodeValidatorTest {
     }
 
     @Test
+    fun `GS1 codes keep their field separator`() {
+        // The milk-bottle Data Matrix exactly as ML Kit returns it: a leading
+        // GS (FNC1) plus one between fields.
+        val gs1 = "\u001D0104607078117294215fGHNL\u001D93H/xN"
+        assertTrue(BarcodeValidator.isValid(gs1, Barcode.FORMAT_DATA_MATRIX))
+        assertTrue(BarcodeValidator.isValid("0107290001165188\u001D10ABC123", Barcode.FORMAT_CODE_128))
+        assertFalse(BarcodeValidator.isValid("0701\u001E7001", Barcode.FORMAT_DATA_MATRIX))
+    }
+
+    @Test
     fun `shelf Data Matrix values are accepted as-is`() {
         assertTrue(BarcodeValidator.isValid("07017001", Barcode.FORMAT_DATA_MATRIX))
         assertTrue(BarcodeValidator.isValid("07-02-60-01", Barcode.FORMAT_QR_CODE))

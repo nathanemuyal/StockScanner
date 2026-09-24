@@ -13,8 +13,7 @@ import com.google.mlkit.vision.barcode.common.Barcode
  * one-off misreads. QR / Data Matrix are error-corrected, so a single frame
  * is already trustworthy and is accepted immediately.
  *
- * Not thread-safe: fed only from ML Kit's success callbacks, which all run
- * on the main thread.
+ * Not thread-safe: fed only from the single camera analysis executor.
  */
 class ScanConsensus(
     private val requiredHits1D: Int = 2,

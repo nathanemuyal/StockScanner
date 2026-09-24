@@ -17,11 +17,9 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -32,15 +30,14 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.ZoomSuggestionOptions
 import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
 import com.warehouse.stockscanner.scan.AimSelector
+import com.warehouse.stockscanner.scan.MultiPassScanner
 import com.warehouse.stockscanner.scan.ScanConsensus
-import com.warehouse.stockscanner.scan.toScanCandidate
+import com.warehouse.stockscanner.scan.ShelfLabelFilter
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -77,6 +74,7 @@ class ScannerActivity : AppCompatActivity() {
     private val handled = AtomicBoolean(false)
     private val consensus = ScanConsensus()
     private var mode: String = MODE_PRODUCT
+    private var currentLocation: String? = null
     private var camera: Camera? = null
 
     private val requestPermissionLauncher =
@@ -95,7 +93,7 @@ class ScannerActivity : AppCompatActivity() {
         setContentView(R.layout.activity_scanner)
 
         mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_PRODUCT
-        val currentLocation = intent.getStringExtra(EXTRA_CURRENT_LOCATION)
+        currentLocation = intent.getStringExtra(EXTRA_CURRENT_LOCATION)
         previewView = findViewById(R.id.previewView)
         tvHint = findViewById(R.id.tvHint)
         tvLocationBadge = findViewById(R.id.tvLocationBadge)
@@ -112,6 +110,7 @@ class ScannerActivity : AppCompatActivity() {
         tvHint.text = if (mode == MODE_LOCATION) "כוון את ה-QR של המדף למרכז המסגרת" else "כוון את ברקוד המוצר למרכז המסגרת"
 
         // While scanning products, keep reminding the user which shelf they're on.
+        val currentLocation = currentLocation
         if (mode == MODE_PRODUCT && !currentLocation.isNullOrBlank()) {
             tvLocationBadge.text = "📍 מיקום נוכחי: $currentLocation"
             tvLocationBadge.visibility = android.view.View.VISIBLE
@@ -177,6 +176,9 @@ class ScannerActivity : AppCompatActivity() {
                         .build()
                 )
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                // RGBA so a frame converts straight to a Bitmap that
+                // MultiPassScanner can crop.
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
 
             try {
@@ -188,18 +190,22 @@ class ScannerActivity : AppCompatActivity() {
                     analysis
                 )
                 val boundCamera = camera!!
+                val cropScanner = BarcodeScanning.getClient(optionsBuilder.build())
                 val maxZoom = boundCamera.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
-                if (maxZoom > 1f) {
+                val fullFrameScanner = if (maxZoom > 1f) {
                     optionsBuilder.setZoomSuggestionOptions(
                         ZoomSuggestionOptions.Builder { ratio ->
                             boundCamera.cameraControl.setZoomRatio(ratio)
                             true
                         }.setMaxSupportedZoomRatio(minOf(maxZoom, MAX_AUTO_ZOOM)).build()
                     )
+                    BarcodeScanning.getClient(optionsBuilder.build())
+                } else {
+                    cropScanner
                 }
-                val scanner = BarcodeScanning.getClient(optionsBuilder.build())
+                val multiPass = MultiPassScanner(fullFrameScanner, cropScanner)
                 analysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                    processImageProxy(scanner, imageProxy)
+                    processImageProxy(multiPass, imageProxy)
                 }
                 enableTapToFocus(boundCamera)
                 // Not every device has a flash unit — only offer the toggle
@@ -227,36 +233,37 @@ class ScannerActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    @OptIn(ExperimentalGetImage::class)
-    private fun processImageProxy(scanner: BarcodeScanner, imageProxy: ImageProxy) {
-        val mediaImage = imageProxy.image
-        if (mediaImage == null) {
+    /** Runs on [cameraExecutor]; MultiPassScanner blocks while ML Kit decodes. */
+    private fun processImageProxy(multiPass: MultiPassScanner, imageProxy: ImageProxy) {
+        if (handled.get()) {
             imageProxy.close()
             return
         }
         val rotation = imageProxy.imageInfo.rotationDegrees
-        val image = InputImage.fromMediaImage(mediaImage, rotation)
+        val frame = try {
+            imageProxy.toBitmap()
+        } finally {
+            imageProxy.close()
+        }
         // ML Kit reports bounding boxes in the upright image, so the frame's
         // center must be measured in upright dimensions too.
-        val uprightWidth = if (rotation % 180 == 0) imageProxy.width else imageProxy.height
-        val uprightHeight = if (rotation % 180 == 0) imageProxy.height else imageProxy.width
-        scanner.process(image)
-            .addOnSuccessListener { barcodes ->
-                if (!handled.get()) {
-                    val candidates = barcodes.mapNotNull { it.toScanCandidate() }
-                    val aimed = AimSelector.pick(candidates, uprightWidth, uprightHeight)
-                    val value = consensus.offer(aimed)
-                    if (value != null && handled.compareAndSet(false, true)) {
-                        onScanned(value)
-                    }
-                }
-            }
-            .addOnFailureListener {
-                // Ignore single-frame failures; the next frame will retry.
-            }
-            .addOnCompleteListener {
-                imageProxy.close()
-            }
+        val uprightWidth = if (rotation % 180 == 0) frame.width else frame.height
+        val uprightHeight = if (rotation % 180 == 0) frame.height else frame.width
+        val found = try {
+            multiPass.scan(frame, rotation)
+        } catch (e: Exception) {
+            // Ignore single-frame failures; the next frame will retry.
+            return
+        }
+        val candidates = if (mode == MODE_PRODUCT) {
+            found.filterNot { ShelfLabelFilter.isShelfLabel(it, currentLocation) }
+        } else {
+            found
+        }
+        val value = consensus.offer(AimSelector.pick(candidates, uprightWidth, uprightHeight))
+        if (value != null && handled.compareAndSet(false, true)) {
+            onScanned(value)
+        }
     }
 
     /**

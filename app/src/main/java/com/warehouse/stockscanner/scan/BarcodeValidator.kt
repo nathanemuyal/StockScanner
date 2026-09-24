@@ -19,10 +19,19 @@ object BarcodeValidator {
     /** Code 128 / Code 39 have no mandatory check digit, so very short reads are almost always fragments. */
     const val MIN_FREE_TEXT_LENGTH = 4
 
+    /**
+     * GS1 Data Matrix / GS1-128 (product marking codes) start with, and
+     * separate their variable-length fields with, ASCII 29 — part of the
+     * real value, not noise (Java even counts it as whitespace, so trim()
+     * would eat the leading one). Found by the milk-bottle photo in
+     * ScanAccuracyTest, whose code was being thrown away.
+     */
+    const val GS1_SEPARATOR = '\u001D'
+
     fun isValid(value: String?, format: Int): Boolean {
         if (value.isNullOrBlank()) return false
-        if (value != value.trim()) return false
-        if (value.any { Character.isISOControl(it) }) return false
+        if (value != value.trim { it.isWhitespace() && it != GS1_SEPARATOR }) return false
+        if (value.any { Character.isISOControl(it) && it != GS1_SEPARATOR }) return false
         return when (format) {
             Barcode.FORMAT_EAN_13 -> value.length == 13 && hasValidGtinCheckDigit(value)
             Barcode.FORMAT_EAN_8 -> value.length == 8 && hasValidGtinCheckDigit(value)
