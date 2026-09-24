@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aim frame over the camera preview. The scanner picks the code under the
+     center of the frame (see scan/AimSelector), so this shows the worker
+     where to put the barcode they mean. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@android:color/transparent" />
+    <stroke
+        android:width="3dp"
+        android:color="@color/scanner_overlay_text" />
+    <corners android:radius="12dp" />
+</shape>

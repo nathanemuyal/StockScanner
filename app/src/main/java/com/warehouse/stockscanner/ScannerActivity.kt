@@ -12,6 +12,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Size
+import android.view.MotionEvent
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -21,18 +22,25 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.TorchState
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.ZoomSuggestionOptions
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import com.warehouse.stockscanner.scan.AimSelector
+import com.warehouse.stockscanner.scan.ScanConsensus
+import com.warehouse.stockscanner.scan.toScanCandidate
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -52,6 +60,13 @@ class ScannerActivity : AppCompatActivity() {
         const val EXTRA_VALUE = "value"
         const val EXTRA_CURRENT_LOCATION = "current_location"
         private const val SCAN_BUZZ_MS = 50L
+        // Full HD instead of 720p: a 13-digit EAN held at arm's length is only
+        // a few hundred pixels wide at 720p, too few for its thinnest bars to
+        // survive motion blur. ML Kit recommends >=1920 px for 1D codes.
+        private val ANALYSIS_SIZE = Size(1920, 1080)
+        // ML Kit's auto-zoom may zoom in on a code too small to decode; capped
+        // so the frame never zooms so far that the worker loses their aim.
+        private const val MAX_AUTO_ZOOM = 4f
     }
 
     private lateinit var previewView: PreviewView
@@ -60,6 +75,7 @@ class ScannerActivity : AppCompatActivity() {
     private lateinit var btnTorch: Button
     private lateinit var cameraExecutor: ExecutorService
     private val handled = AtomicBoolean(false)
+    private val consensus = ScanConsensus()
     private var mode: String = MODE_PRODUCT
     private var camera: Camera? = null
 
@@ -93,7 +109,7 @@ class ScannerActivity : AppCompatActivity() {
             cam.cameraControl.enableTorch(cam.cameraInfo.torchState.value != TorchState.ON)
         }
 
-        tvHint.text = if (mode == MODE_LOCATION) "סרוק את ה-QR של המדף" else "סרוק ברקוד מוצר"
+        tvHint.text = if (mode == MODE_LOCATION) "כוון את ה-QR של המדף למרכז המסגרת" else "כוון את ברקוד המוצר למרכז המסגרת"
 
         // While scanning products, keep reminding the user which shelf they're on.
         if (mode == MODE_PRODUCT && !currentLocation.isNullOrBlank()) {
@@ -132,10 +148,9 @@ class ScannerActivity : AppCompatActivity() {
             // 2D codes) — both are accepted here so either kind of label works,
             // while 1D barcode formats stay excluded. Product scans still accept
             // QR/Data Matrix too, since some products may be labeled with one.
-            val options = if (mode == MODE_LOCATION) {
+            val optionsBuilder = if (mode == MODE_LOCATION) {
                 BarcodeScannerOptions.Builder()
                     .setBarcodeFormats(Barcode.FORMAT_QR_CODE, Barcode.FORMAT_DATA_MATRIX)
-                    .build()
             } else {
                 BarcodeScannerOptions.Builder()
                     .setBarcodeFormats(
@@ -148,18 +163,21 @@ class ScannerActivity : AppCompatActivity() {
                         Barcode.FORMAT_CODE_128,
                         Barcode.FORMAT_CODE_39
                     )
-                    .build()
             }
-            val scanner = BarcodeScanning.getClient(options)
 
             val analysis = ImageAnalysis.Builder()
-                .setTargetResolution(Size(1280, 720))
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                ANALYSIS_SIZE,
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                            )
+                        )
+                        .build()
+                )
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-
-            analysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                processImageProxy(scanner, imageProxy)
-            }
 
             try {
                 cameraProvider.unbindAll()
@@ -169,6 +187,21 @@ class ScannerActivity : AppCompatActivity() {
                     preview,
                     analysis
                 )
+                val boundCamera = camera!!
+                val maxZoom = boundCamera.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
+                if (maxZoom > 1f) {
+                    optionsBuilder.setZoomSuggestionOptions(
+                        ZoomSuggestionOptions.Builder { ratio ->
+                            boundCamera.cameraControl.setZoomRatio(ratio)
+                            true
+                        }.setMaxSupportedZoomRatio(minOf(maxZoom, MAX_AUTO_ZOOM)).build()
+                    )
+                }
+                val scanner = BarcodeScanning.getClient(optionsBuilder.build())
+                analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                    processImageProxy(scanner, imageProxy)
+                }
+                enableTapToFocus(boundCamera)
                 // Not every device has a flash unit — only offer the toggle
                 // when one actually exists.
                 val cameraInfo = camera?.cameraInfo
@@ -201,11 +234,18 @@ class ScannerActivity : AppCompatActivity() {
             imageProxy.close()
             return
         }
-        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        val image = InputImage.fromMediaImage(mediaImage, rotation)
+        // ML Kit reports bounding boxes in the upright image, so the frame's
+        // center must be measured in upright dimensions too.
+        val uprightWidth = if (rotation % 180 == 0) imageProxy.width else imageProxy.height
+        val uprightHeight = if (rotation % 180 == 0) imageProxy.height else imageProxy.width
         scanner.process(image)
             .addOnSuccessListener { barcodes ->
                 if (!handled.get()) {
-                    val value = barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
+                    val candidates = barcodes.mapNotNull { it.toScanCandidate() }
+                    val aimed = AimSelector.pick(candidates, uprightWidth, uprightHeight)
+                    val value = consensus.offer(aimed)
                     if (value != null && handled.compareAndSet(false, true)) {
                         onScanned(value)
                     }
@@ -217,6 +257,28 @@ class ScannerActivity : AppCompatActivity() {
             .addOnCompleteListener {
                 imageProxy.close()
             }
+    }
+
+    /**
+     * Continuous autofocus hunts on busy shelves (it may lock onto the bin in
+     * front instead of the label behind it); a tap focuses and meters exactly
+     * where the worker points, then CameraX returns to continuous AF after a
+     * few seconds.
+     */
+    private fun enableTapToFocus(cam: Camera) {
+        previewView.setOnTouchListener { view, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                val point = previewView.meteringPointFactory.createPoint(event.x, event.y)
+                cam.cameraControl.startFocusAndMetering(
+                    FocusMeteringAction.Builder(
+                        point,
+                        FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+                    ).build()
+                )
+                view.performClick()
+            }
+            true
+        }
     }
 
     private fun onScanned(value: String) {

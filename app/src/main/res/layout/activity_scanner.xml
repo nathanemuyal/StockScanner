@@ -8,6 +8,27 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Aim frame + crosshair: the code nearest the center wins when several
+         are in view (shelf labels carry four Data Matrix codes, with product
+         barcodes right next to them). -->
+    <View
+        android:layout_width="280dp"
+        android:layout_height="180dp"
+        android:layout_gravity="center"
+        android:background="@drawable/scan_aim_frame" />
+
+    <View
+        android:layout_width="24dp"
+        android:layout_height="2dp"
+        android:layout_gravity="center"
+        android:background="@color/scanner_overlay_text" />
+
+    <View
+        android:layout_width="2dp"
+        android:layout_height="24dp"
+        android:layout_gravity="center"
+        android:background="@color/scanner_overlay_text" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
