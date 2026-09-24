@@ -61,12 +61,15 @@ Matrix במסך הזה — כדי שברקוד מוצר שנקלט באותו פ
 <div class="mock-phone">
   <div class="mock-badge">תרשים סכמטי — לא צילום מסך אמיתי</div>
   <div class="mock-camera">📷 תצוגת מצלמה חיה</div>
-  <div class="mock-hint">סרוק את ה-QR של המדף</div>
+  <div class="mock-hint">כוון את ה-QR של המדף למרכז המסגרת</div>
   <div class="mock-body">
     <span class="mock-btn outline" style="width:fit-content;margin:.5rem auto;padding:.5rem 2rem">🔦 הדלק פנס</span>
     <span class="mock-btn outline" style="width:fit-content;margin:.5rem auto;padding:.5rem 2rem">ביטול</span>
   </div>
 </div>
+
+**מכוונים את הקוד הרצוי למרכז המסגרת.** בתווית מדף יש כמה קודים, ולידה ברקודי מוצרים — האפליקציה
+קולטת את הקוד שבמרכז המסגרת. אם התמונה לא בפוקוס, לוחצים על הקוד במסך כדי למקד עליו.
 
 כפתור הפנס מוצג רק במכשירים שיש להם פלאש, ונעלם אוטומטית אם אין. עם זיהוי מוצלח של קוד, המכשיר
 גם רוטט לרגע — אישור שלא תלוי במבט במסך.
@@ -82,7 +85,7 @@ Matrix במסך הזה — כדי שברקוד מוצר שנקלט באותו פ
 <div class="mock-phone">
   <div class="mock-badge">תרשים סכמטי — לא צילום מסך אמיתי</div>
   <div class="mock-camera">📷 תצוגת מצלמה חיה</div>
-  <div class="mock-hint">סרוק ברקוד מוצר</div>
+  <div class="mock-hint">כוון את ברקוד המוצר למרכז המסגרת</div>
   <div style="background:#ffe082;color:#5d4a00;text-align:center;padding:.5rem;font-weight:700;font-size:.78rem">📍 מיקום נוכחי: Z-09-09</div>
 </div>
 
