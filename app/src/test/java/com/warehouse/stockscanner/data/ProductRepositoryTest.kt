@@ -839,6 +839,83 @@ class ProductRepositoryTest {
         assertEquals(0, stored.packageContent)
     }
 
+    // ---------- setBarcodeRole ----------
+    //
+    // The one place a worker's own answer about packaging is written, and
+    // until now it was only exercised in passing. Everything it guards
+    // against is something that would go silently wrong: a bad role stored
+    // verbatim, a carton size left on a code that is not on cartons, or a
+    // code quietly changing product.
+
+    /** A role nothing recognises is refused outright — the row keeps what it had. */
+    @Test
+    fun `setBarcodeRole refuses a role that is not one of the three`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+        repository.registerBarcode("111", "ABC-123", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        repository.setBarcodeRole("111", "קרטון", 24)
+
+        val stored = repository.barcodeInfo("111")!!
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, stored.role)
+        assertEquals(12, stored.packageContent)
+    }
+
+    /** Saying a code is on single units clears the carton size that is no longer true of it. */
+    @Test
+    fun `setBarcodeRole to בודד drops the package content`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+        repository.registerBarcode("111", "ABC-123", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        repository.setBarcodeRole("111", BarcodeEntity.ROLE_UNIT, 12)
+
+        val stored = repository.barcodeInfo("111")!!
+        assertEquals(BarcodeEntity.ROLE_UNIT, stored.role)
+        assertEquals(0, stored.packageContent)
+    }
+
+    /** A negative carton size is not a carton size; it floors at zero rather than being stored. */
+    @Test
+    fun `setBarcodeRole never stores a negative package content`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+        repository.registerBarcode("111", "ABC-123")
+
+        repository.setBarcodeRole("111", BarcodeEntity.ROLE_PACKAGE, -5)
+
+        assertEquals(0, repository.barcodeInfo("111")!!.packageContent)
+    }
+
+    /** Describing a code nobody has seen must not invent one. */
+    @Test
+    fun `setBarcodeRole on an unknown barcode creates nothing`() = runBlocking {
+        db.productDao().insertAll(listOf(ProductEntity("ABC-123", "מוצר", "", "", 0)))
+
+        repository.setBarcodeRole("nope", BarcodeEntity.ROLE_PACKAGE, 12)
+
+        assertNull(repository.barcodeInfo("nope"))
+    }
+
+    /**
+     * The rule stated in its kdoc, held to: answering what a sticker is on
+     * says nothing about which product owns it, and must not move it.
+     */
+    @Test
+    fun `setBarcodeRole never changes which sku the code belongs to`() = runBlocking {
+        db.productDao().insertAll(
+            listOf(
+                ProductEntity("ABC-123", "מוצר", "", "", 0),
+                ProductEntity("XYZ-9", "אחר", "", "", 1)
+            )
+        )
+        repository.registerBarcode("111", "ABC-123")
+
+        repository.setBarcodeRole("111", BarcodeEntity.ROLE_MIXED, 6)
+
+        val stored = repository.barcodeInfo("111")!!
+        assertEquals("ABC-123", stored.sku)
+        assertEquals(BarcodeEntity.ROLE_MIXED, stored.role)
+        assertEquals(6, stored.packageContent)
+    }
+
     /** A code already owned by another מקט is never quietly stolen by a scan. */
     @Test
     fun `registering a barcode never moves it off the sku that already owns it`() = runBlocking {

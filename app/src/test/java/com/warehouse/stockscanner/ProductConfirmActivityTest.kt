@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.DialogInterface
 import android.content.Intent
 import android.widget.EditText
+import android.widget.RadioButton
 import android.os.Looper
 import android.widget.Button
 import androidx.appcompat.app.AlertDialog
@@ -312,5 +313,70 @@ class ProductConfirmActivityTest {
         val stored = runBlocking { AppDatabase.getInstance(context).barcodeDao().findByBarcode("999") }!!
         assertEquals(BarcodeEntity.ROLE_UNIT, stored.role)
         assertEquals(0, stored.packageContent)
+    }
+
+    /**
+     * The seam between answering what a sticker is on and counting the shelf
+     * it is on. Both sides are tested on their own — this screen checks the
+     * answer reaches the database, and the inventory screen checks it shapes
+     * the fields — but each does it with the other half stubbed out: the
+     * inventory tests put the code on file themselves, and this one never
+     * opens the screen the answer is for. So nothing yet proved the answer
+     * given here is the one that arrives there, which is the only reason to
+     * ask the question at all.
+     */
+    @Test
+    fun `the packaging answered here is what the inventory screen opens with`() {
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "", "", 0))
+            )
+        }
+
+        val confirm = confirmScreenFor("ABC-123", "999", "A-01-05")
+        confirm.findViewById<Button>(R.id.btnConfirm).performClick()
+
+        awaitUntil { showingDialog()?.listView != null }
+        pickRoleItem(1) // אריזה
+        awaitUntil { showingDialog()?.findViewById<EditText>(R.id.etPackageContentPrompt) != null }
+        showingDialog()!!.findViewById<EditText>(R.id.etPackageContentPrompt)!!.setText("12")
+        showingDialog()!!.getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+
+        awaitUntil { shadowOf(confirm).peekNextStartedActivityForResult() != null }
+        val inventoryIntent = shadowOf(confirm).nextStartedActivityForResult.intent
+
+        // Open the very screen the confirm flow just launched, with its own intent.
+        val inventory = Robolectric.buildActivity(InventoryActivity::class.java, inventoryIntent).setup().get()
+        awaitUntil { inventory.findViewById<RadioButton>(R.id.rbPackage).isChecked }
+
+        // Opened as a package count, with the size the worker just gave...
+        assertEquals("12", inventory.findViewById<EditText>(R.id.etPackageContent).text.toString())
+        // ...and the field they actually count into still empty.
+        assertEquals("", inventory.findViewById<EditText>(R.id.etPackageCount).text.toString())
+    }
+
+    /** Declining the question leaves the next screen exactly as it always was. */
+    @Test
+    fun `declining the question opens the inventory screen in plain units`() {
+        runBlocking {
+            AppDatabase.getInstance(context).productDao().insertAll(
+                listOf(ProductEntity("ABC-123", "מוצר", "", "", 0))
+            )
+        }
+
+        val confirm = confirmScreenFor("ABC-123", "999", "A-01-05")
+        confirm.findViewById<Button>(R.id.btnConfirm).performClick()
+
+        awaitUntil { showingDialog()?.listView != null }
+        pickRoleItem(3) // לא יודע
+
+        awaitUntil { shadowOf(confirm).peekNextStartedActivityForResult() != null }
+        val inventory = Robolectric.buildActivity(
+            InventoryActivity::class.java,
+            shadowOf(confirm).nextStartedActivityForResult.intent
+        ).setup().get()
+        awaitUntil { inventory.findViewById<RadioButton>(R.id.rbUnits).isChecked }
+
+        assertEquals("", inventory.findViewById<EditText>(R.id.etQuantity).text.toString())
     }
 }

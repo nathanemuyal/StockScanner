@@ -159,4 +159,36 @@ class ExcelReaderTest {
         assertEquals(BarcodeEntity.ROLE_UNIT, only.role)
         assertEquals(0, only.packageContent)
     }
+
+    /**
+     * Half a statement is not a statement. A תפקיד of אריזה with no תכולה
+     * beside it says the code is on packages without saying how many are in
+     * one — so the role stands (the worker can still see they scanned a
+     * package code) and the size stays 0 rather than being invented.
+     */
+    @Test
+    fun `a role with no content column keeps the role and leaves the size unset`() {
+        val result = fixture("sample_barcode_role_only.xlsx").use { ExcelReader.readProductsFromStream(it) }
+
+        val only = result.barcodes.single()
+        assertEquals("222", only.barcode)
+        assertEquals(BarcodeEntity.ROLE_PACKAGE, only.role)
+        assertEquals(0, only.packageContent)
+    }
+
+    /**
+     * The mirror: a תכולה with no תפקיד is a carton size for a code nothing
+     * claims is on cartons. The code reads as a plain unit, and the size
+     * goes with it — the same rule the writer and registerBarcode apply,
+     * since a unit has no package to hold anything.
+     */
+    @Test
+    fun `a content column with no role reads as a plain unit and drops the size`() {
+        val result = fixture("sample_barcode_content_only.xlsx").use { ExcelReader.readProductsFromStream(it) }
+
+        val only = result.barcodes.single()
+        assertEquals("333", only.barcode)
+        assertEquals(BarcodeEntity.ROLE_UNIT, only.role)
+        assertEquals(0, only.packageContent)
+    }
 }
