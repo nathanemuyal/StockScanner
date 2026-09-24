@@ -37,3 +37,19 @@ Used by `ScanAccuracyTest`. Resized to 1600 px on the long side.
 | `web_gs1-128_product_barcode.jpg` | Public domain | User Mike1024 | https://commons.wikimedia.org/wiki/File:GS1-128_product_barcode.jpg |
 | `web_package_tracking_barcode_scanner.jpg` | CC BY-SA 2.0 | IAEA | https://commons.wikimedia.org/wiki/File:Package_tracking_barcode_scanner.jpg |
 | `web_qr-code-wikimedia_commons_photo_challenges_are_fun.jpg` | CC BY-SA 4.0 | Cbuske46 | https://commons.wikimedia.org/wiki/File:QR-Code-Wikimedia_Commons_photo_challenges_are_fun.jpg |
+
+## Small / low-resolution (`small/`)
+
+Downscaled from the Wikimedia Commons files below (flattened onto white, quiet zone added, JPEG q60–75).
+The `_NNNpx` suffix is the width the code was scaled to, in pixels (for the two photos: the image width).
+
+| Files | License | Author | Source |
+|---|---|---|---|
+| `small_ean13_*` | Public domain | Sakurambo | https://commons.wikimedia.org/wiki/File:EAN-13-5901234123457.svg |
+| `small_upca_*` | CC0 | toguro | https://commons.wikimedia.org/wiki/File:UPC-A-036000291452.svg |
+| `small_ean8_*` | Public domain | User:Nandhp | https://commons.wikimedia.org/wiki/File:Barcode_EAN8_65833254.svg |
+| `small_code39_*` | Public domain | The original uploader was Hmilch at German Wikipedia. | https://commons.wikimedia.org/wiki/File:Barcode_Code39_1234567890.png |
+| `small_qr_*` | Public domain | Brdall | https://commons.wikimedia.org/wiki/File:QR_code_for_mobile_English_Wikipedia.svg |
+| `small_datamatrix_*` | Public domain | Original:  Guigui13parent Vector:  Stannered | https://commons.wikimedia.org/wiki/File:Datamatrix.svg |
+| `small_photo_ean_obst_*` | Public domain | REWE | https://commons.wikimedia.org/wiki/File:EAN-Obst.jpg |
+| `small_isbn_*` | Public domain | Augustin Kouamé | https://commons.wikimedia.org/wiki/File:Isbn_barcode_9783161484100.png |

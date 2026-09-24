@@ -3,6 +3,7 @@ package com.warehouse.stockscanner
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
@@ -48,6 +49,7 @@ class ScanAccuracyTest {
     companion object {
         private const val TAG = "ScanAccuracyTest"
         private const val MIN_DETECTION_RATE = 0.85
+        private const val MIN_SMALL_DETECTION_RATE = 0.80
 
         private lateinit var productScanner: BarcodeScanner
 
@@ -111,12 +113,49 @@ class ScanAccuracyTest {
             "web_qr-code-wikimedia_commons_photo_challenges_are_fun.jpg" to
                 "Wikimedia Commons photo challenges are fun!"
         )
+
+        /**
+         * Small, low-resolution codes (assets/accuracy/small/). What limits a
+         * decoder is pixels per bar ("module"): an EAN-13 is 95 modules wide,
+         * so at 160 px each bar is ~1.7 px, at 120 px barely more than one.
+         * This tier is small but still has enough pixels to decode.
+         */
+        val SMALL_READABLE = mapOf(
+            "small_ean13_240px.jpg" to "5901234123457",
+            "small_ean13_160px.jpg" to "5901234123457",
+            "small_upca_240px.jpg" to "036000291452",
+            "small_upca_160px.jpg" to "036000291452",
+            "small_ean8_160px.jpg" to "65833254",
+            "small_ean8_110px.jpg" to "65833254",
+            "small_code39_176px.jpg" to "1234567890",
+            "small_qr_100px.jpg" to "http://en.m.wikipedia.org",
+            "small_qr_64px.jpg" to "http://en.m.wikipedia.org",
+            "small_datamatrix_88px.jpg" to "Wikipedia, the free encyclopedia",
+            "small_datamatrix_66px.jpg" to "Wikipedia, the free encyclopedia",
+            "small_isbn_234px.jpg" to "9783161484100",
+            "small_photo_ean_obst_250px.jpg" to "2404105001722"
+        )
+
+        /** ~1 px per module or less: may be missed, must never be misread. */
+        val SMALL_TINY = mapOf(
+            "small_ean13_120px.jpg" to "5901234123457",
+            "small_upca_120px.jpg" to "036000291452",
+            "small_ean8_80px.jpg" to "65833254",
+            "small_code39_130px.jpg" to "1234567890",
+            "small_qr_48px.jpg" to "http://en.m.wikipedia.org",
+            "small_datamatrix_44px.jpg" to "Wikipedia, the free encyclopedia"
+        )
     }
 
     private fun loadBitmap(name: String): Bitmap {
+        if (name.startsWith("small_")) return loadAsset("accuracy/small/$name")
+        return loadAsset("accuracy/$name")
+    }
+
+    private fun loadAsset(path: String): Bitmap {
         val assets = InstrumentationRegistry.getInstrumentation().context.assets
-        return assets.open("accuracy/$name").use { BitmapFactory.decodeStream(it) }
-            ?: error("Failed to decode $name")
+        return assets.open(path).use { BitmapFactory.decodeStream(it) }
+            ?: error("Failed to decode $path")
     }
 
     private fun detect(bitmap: Bitmap): List<Barcode> {
@@ -147,9 +186,9 @@ class ScanAccuracyTest {
     }
 
     /** Runs the exact pipeline ScannerActivity runs, frame by frame. */
-    private fun scanBurst(name: String): String? {
+    private fun scanBurst(bitmap: Bitmap): String? {
         val consensus = ScanConsensus()
-        for (frame in burst(loadBitmap(name))) {
+        for (frame in burst(bitmap)) {
             val candidates = detect(frame).mapNotNull { it.toScanCandidate() }
             val confirmed = consensus.offer(AimSelector.pick(candidates, frame.width, frame.height))
             if (confirmed != null) return confirmed
@@ -157,26 +196,58 @@ class ScanAccuracyTest {
         return null
     }
 
-    @Test
-    fun labeledPhotos_neverProduceAWrongValue_andMostAreRead() {
-        val wrong = mutableListOf<String>()
+    private fun scanBurst(name: String): String? = scanBurst(loadBitmap(name))
+
+    /**
+     * The code as the camera actually delivers it: a small area in the middle
+     * of a full 1920x1080 analysis frame, on a light-gray "shelf" background.
+     */
+    private fun inCameraFrame(code: Bitmap): Bitmap =
+        Bitmap.createBitmap(1920, 1080, Bitmap.Config.ARGB_8888).also {
+            val canvas = Canvas(it)
+            canvas.drawColor(Color.rgb(190, 190, 185))
+            canvas.drawBitmap(code, (1920 - code.width) / 2f, (1080 - code.height) / 2f, null)
+        }
+
+    /** Downscales so the long side is [longSide] px (a low-resolution camera or a heavy crop). */
+    private fun lowRes(src: Bitmap, longSide: Int): Bitmap {
+        val k = longSide.toFloat() / maxOf(src.width, src.height)
+        return Bitmap.createScaledBitmap(src, (src.width * k).toInt(), (src.height * k).toInt(), true)
+    }
+
+    private class Tally(val label: String) {
+        var total = 0
         var read = 0
-        for ((name, expected) in LABELED) {
-            val got = scanBurst(name)
-            Log.i(TAG, "$name expected=$expected got=$got")
+        val wrong = mutableListOf<String>()
+        val rate get() = if (total == 0) 0.0 else read.toDouble() / total
+
+        fun record(name: String, expected: String, got: String?) {
+            total++
+            Log.i(TAG, "$label $name expected=$expected got=$got")
             when (got) {
                 null -> Unit
                 expected -> read++
                 else -> wrong += "$name: expected $expected, got $got"
             }
         }
-        val rate = read.toDouble() / LABELED.size
-        Log.i(TAG, "Detection rate: $read/${LABELED.size} = ${"%.0f".format(rate * 100)}%")
-        assertEquals("Wrong values accepted:\n" + wrong.joinToString("\n"), 0, wrong.size)
-        assertTrue(
-            "Detection rate $read/${LABELED.size} is below ${MIN_DETECTION_RATE * 100}%",
-            rate >= MIN_DETECTION_RATE
+
+        fun assertNoWrongValues() {
+            Log.i(TAG, "$label detection rate: $read/$total = ${"%.0f".format(rate * 100)}%")
+            assertEquals("$label - wrong values accepted:\n" + wrong.joinToString("\n"), 0, wrong.size)
+        }
+
+        fun assertRateAtLeast(min: Double) = assertTrue(
+            "$label detection rate $read/$total is below ${min * 100}%",
+            rate >= min
         )
+    }
+
+    @Test
+    fun labeledPhotos_neverProduceAWrongValue_andMostAreRead() {
+        val tally = Tally("photos")
+        for ((name, expected) in LABELED) tally.record(name, expected, scanBurst(name))
+        tally.assertNoWrongValues()
+        tally.assertRateAtLeast(MIN_DETECTION_RATE)
     }
 
     @Test
@@ -197,21 +268,53 @@ class ScanAccuracyTest {
     fun blurredPhotos_mayBeMissed_butAreNeverMisread() {
         // Heavy blur is where 1D decoders guess. Downscale-then-upscale
         // smears the thinnest bars the way a moving hand does.
-        val wrong = mutableListOf<String>()
+        val tally = Tally("blurred")
         for ((name, expected) in LABELED.filterValues { it.all(Char::isDigit) }) {
             val src = loadBitmap(name)
             val small = Bitmap.createScaledBitmap(src, src.width / 5, src.height / 5, true)
-            val blurred = Bitmap.createScaledBitmap(small, src.width, src.height, true)
-            val consensus = ScanConsensus()
-            var got: String? = null
-            for (frame in burst(blurred)) {
-                val candidates = detect(frame).mapNotNull { it.toScanCandidate() }
-                got = consensus.offer(AimSelector.pick(candidates, frame.width, frame.height)) ?: continue
-                break
-            }
-            Log.i(TAG, "blurred $name expected=$expected got=$got")
-            if (got != null && got != expected) wrong += "$name: expected $expected, got $got"
+            tally.record(name, expected, scanBurst(Bitmap.createScaledBitmap(small, src.width, src.height, true)))
         }
-        assertEquals("Blur produced wrong values:\n" + wrong.joinToString("\n"), 0, wrong.size)
+        tally.assertNoWrongValues()
+    }
+
+    @Test
+    fun smallBarcodes_inAFullCameraFrame_areReadAndNeverMisread() {
+        // The realistic case: a small label, or a normal one held far away,
+        // covers only a few hundred pixels of the 1920x1080 frame.
+        val readable = Tally("small-in-frame")
+        for ((name, expected) in SMALL_READABLE) {
+            readable.record(name, expected, scanBurst(inCameraFrame(loadBitmap(name))))
+        }
+        readable.assertNoWrongValues()
+        readable.assertRateAtLeast(MIN_SMALL_DETECTION_RATE)
+
+        val tiny = Tally("tiny-in-frame")
+        for ((name, expected) in SMALL_TINY) {
+            tiny.record(name, expected, scanBurst(inCameraFrame(loadBitmap(name))))
+        }
+        tiny.assertNoWrongValues()
+    }
+
+    @Test
+    fun smallLowResolutionImagesOnTheirOwn_areNeverMisread() {
+        // The image file itself is tiny (down to ~50x50 px), not just the code.
+        val tally = Tally("small-image")
+        for ((name, expected) in SMALL_READABLE + SMALL_TINY) {
+            tally.record(name, expected, scanBurst(name))
+        }
+        tally.assertNoWrongValues()
+    }
+
+    @Test
+    fun lowResolutionPhotos_areNeverMisread() {
+        // Whole shelf/product photos at 640 and 480 px: every barcode in them
+        // becomes small and soft, as with a cheap or low-resolution camera.
+        for (longSide in listOf(640, 480)) {
+            val tally = Tally("lowres-$longSide")
+            for ((name, expected) in LABELED) {
+                tally.record(name, expected, scanBurst(lowRes(loadBitmap(name), longSide)))
+            }
+            tally.assertNoWrongValues()
+        }
     }
 }
