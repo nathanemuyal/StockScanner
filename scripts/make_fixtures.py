@@ -163,5 +163,51 @@ ws6b.cell(row=2, column=3, value="222")
 
 wb6.save(os.path.join(OUT_DIR, "sample_barcode_roles_legacy.xlsx"))
 
+# --- Fixture 7: the barcodes sheet with only ONE of the two role columns.
+# Half a statement is not a statement: a תפקיד with no תכולה beside it, and
+# a תכולה with no תפקיד, must both settle somewhere sane rather than half
+# describing a code.
+wb7 = openpyxl.Workbook()
+ws7 = wb7.active
+ws7.title = "Products"
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "מיקום"], start=1):
+    ws7.cell(row=1, column=col, value=h).font = Font(bold=True)
+ws7.cell(row=2, column=1, value="ABC-123")
+ws7.cell(row=2, column=2, value="פילטר שמן")
+ws7.cell(row=2, column=3, value="111")
+ws7.cell(row=2, column=4, value="A-01-05")
+
+# תפקיד present, תכולה absent entirely.
+ws7b = wb7.create_sheet("ברקודים כפולים")
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "תפקיד"], start=1):
+    ws7b.cell(row=1, column=col, value=h).font = Font(bold=True)
+ws7b.cell(row=2, column=1, value="ABC-123")
+ws7b.cell(row=2, column=2, value="פילטר שמן")
+ws7b.cell(row=2, column=3, value="222")
+ws7b.cell(row=2, column=4, value="אריזה")
+
+wb7.save(os.path.join(OUT_DIR, "sample_barcode_role_only.xlsx"))
+
+# --- Fixture 8: the mirror — תכולה present, תפקיד absent.
+wb8 = openpyxl.Workbook()
+ws8 = wb8.active
+ws8.title = "Products"
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "מיקום"], start=1):
+    ws8.cell(row=1, column=col, value=h).font = Font(bold=True)
+ws8.cell(row=2, column=1, value="ABC-123")
+ws8.cell(row=2, column=2, value="פילטר שמן")
+ws8.cell(row=2, column=3, value="111")
+ws8.cell(row=2, column=4, value="A-01-05")
+
+ws8b = wb8.create_sheet("ברקודים כפולים")
+for col, h in enumerate(["מקט", "תאור", "ברקוד", "תכולה"], start=1):
+    ws8b.cell(row=1, column=col, value=h).font = Font(bold=True)
+ws8b.cell(row=2, column=1, value="ABC-123")
+ws8b.cell(row=2, column=2, value="פילטר שמן")
+ws8b.cell(row=2, column=3, value="333")
+ws8b.cell(row=2, column=4, value=12)
+
+wb8.save(os.path.join(OUT_DIR, "sample_barcode_content_only.xlsx"))
+
 print("Fixtures written to", OUT_DIR)
 print(os.listdir(OUT_DIR))

@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -178,6 +179,68 @@ class AppDatabaseMigrationTest {
         assertEquals(60, packageRow.quantity)
         assertEquals(0, packageRow.looseUnits)
         assertEquals(7, rows.first { it.sku == "XYZ-9" }.quantity)
+    }
+
+    /**
+     * The upgrade a long-untouched install actually takes. Someone still on
+     * the pre-looseUnits build opens the app once and travels v6 -> v7 -> v8
+     * in a single step, and the tests above only ever check one hop: the v6
+     * ones stop at what v7 added, the v8 ones start from a v7 file. Nothing
+     * asserted that the barcodes table gets seeded on the two-hop path, or
+     * that the table it replaces is actually gone afterwards.
+     */
+    @Test
+    fun `a v6 database arrives at v8 with its barcodes seeded and the old table gone`() = runBlocking {
+        createV6DatabaseWith(
+            "INSERT INTO products (sku, description, barcode, location, rowOrder, quantityType, " +
+                "packageContent, packageCount, quantity, scanned) " +
+                "VALUES ('ABC-123', 'בורג', '111', 'A-01', 0, 'אריזות', 12, 5, 60, 1)",
+            "INSERT INTO products (sku, description, barcode, location, rowOrder, quantityType, " +
+                "packageContent, packageCount, quantity, scanned) " +
+                "VALUES ('XYZ-9', 'אום', '222', 'B-02', 1, 'יחידות', 0, 0, 7, 1)",
+            "INSERT INTO barcode_aliases (barcode, sku) VALUES ('999', 'ABC-123')"
+        )
+
+        val db = openMigrated()
+        try {
+            // Every code is scannable, primary ones included — those only
+            // ever lived on a product row before v8.
+            assertEquals("ABC-123", db.barcodeDao().findSkuByBarcode("111"))
+            assertEquals("XYZ-9", db.barcodeDao().findSkuByBarcode("222"))
+            assertEquals("ABC-123", db.barcodeDao().findSkuByBarcode("999"))
+            assertEquals(3, db.barcodeDao().getAll().size)
+
+            // Nothing is guessed about packaging on the way through.
+            assertEquals(
+                listOf(BarcodeEntity.ROLE_UNIT, BarcodeEntity.ROLE_UNIT, BarcodeEntity.ROLE_UNIT),
+                db.barcodeDao().getAll().map { it.role }
+            )
+
+            // Both hops' defaults landed on the rows that predate them.
+            val packageRow = db.productDao().findAllBySku("ABC-123").single()
+            assertEquals(0, packageRow.looseUnits)
+            assertEquals(0L, packageRow.countedAt)
+            assertEquals(60, packageRow.quantity)
+        } finally {
+            db.close()
+        }
+    }
+
+    /** The table v8 replaces has to be gone, or the next migration inherits two sources of truth. */
+    @Test
+    fun `the old alias table is dropped on the way to v8`() = runBlocking {
+        createV6DatabaseWith("INSERT INTO barcode_aliases (barcode, sku) VALUES ('999', 'ABC-123')")
+
+        val db = openMigrated()
+        try {
+            val cursor = db.openHelper.readableDatabase.query("SELECT name FROM sqlite_master WHERE type='table'")
+            val tables = mutableListOf<String>()
+            cursor.use { while (it.moveToNext()) tables.add(it.getString(0)) }
+            assertTrue("barcodes must exist", "barcodes" in tables)
+            assertTrue("barcode_aliases must be gone, found: $tables", "barcode_aliases" !in tables)
+        } finally {
+            db.close()
+        }
     }
 
     /**
